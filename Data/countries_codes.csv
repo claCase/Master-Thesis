@@ -1,0 +1,311 @@
+,name,num,iso2,iso3,start,end,remarks
+1,Albania,008,AL,ALB,1970,,
+2,Algeria,012,DZ,DZA,1970,,
+3,American Samoa,016,AS,ASM,1970,,
+4,Andorra,020,AD,AND,1970,,
+5,Angola,024,AO,AGO,1970,,
+6,Anguilla,660,AI,AIA,1980,,Formerly part of Saint Kitts-Nevis-Anguilla.
+7,Antarctica,010,AQ,ATA,1983,,Now includes Dronning Maud Land and since 1979 includes British Antarctic Territory and the antarctic part of French Southern and Antarctica Territories.
+8,Antarctica,010,AQ,ATA,1979,1983,Antarctica without Dronning Maud Land.
+9,Antarctica,010,AQ,ATA,1970,1979,Antarctica without British Antarctic Territory and the antarctic territories of French Southern and Antarctica Territories.
+10,Antigua,028,AG,ATG,1970,1981,Now known as Antigua and Barbuda.
+11,Antigua and Barbuda,028,AG,ATG,1981,,Formerly known as Antigua.
+12,Argentina,032,AR,ARG,1970,,
+13,Armenia,051,AM,ARM,1991,,Formerly part of Union of Soviet Socialist Republics.
+14,Aruba,533,AW,ABW,1986,,Formerly part of Netherlands Antilles.
+15,Australia,036,AU,AUS,1970,,
+16,Austria,040,AT,AUT,1970,,
+17,Azerbaijan,031,AZ,AZE,1991,,Formerly part of Union of Soviet Socialist Republics.
+18,Bahamas,044,BS,BHS,1970,,
+19,Bahrain,048,BH,BHR,1970,,
+20,Bangladesh,050,BD,BGD,1971,,Formerly part of Pakistan.
+21,Barbados,052,BB,BRB,1970,,
+22,Belarus,112,BY,BLR,1991,,Formerly part of Union of Soviet Socialist Republics and formerly known as Byelorussian Soviet Socialist Republic.
+23,Belgium,056,BE,BEL,1970,,
+24,Belize,084,BZ,BLZ,1973,,Formerly known as British Honduras.
+25,Benin,204,BJ,BEN,1977,,Formerly known as Dahomey.
+26,Bermuda,060,BM,BMU,1970,,
+27,Bhutan,064,BT,BTN,1970,,
+28,BoliviaFootnote 4,068,BO,BOL,1970,,
+29,"Bonaire, Saint Eustatius and Saba",535,BQ,BES,2010,2011,Formerly part of Netherlands Antilles. Update of the name in 2011.
+30,"Bonaire, Sint Eustatius and Saba",535,BQ,BES,2011,,English name of Sint Eustatius was made consistent with that of the United Nations Terminology and Reference Section (UNTERM).
+31,Bosnia and Herzegovina,070,BA,BIH,1992,,Formerly part of Yugoslavia.
+32,Botswana,072,BW,BWA,1970,,
+34,Brazil,076,BR,BRA,1970,,
+35,British Antarctic Territory,080,BQ,ATB,1970,1979,Now part of Antarctica.
+36,British Honduras,084,,,1970,1973,Now known as Belize.
+37,British Indian Ocean Territory,086,IO,IOT,1970,,
+40,Brunei,096,BN,BRN,1970,1984,Now known as Brunei Darussalam.
+41,Brunei Darussalam,096,BN,BRN,1984,,Formerly known as Brunei.
+42,Bulgaria,100,BG,BGR,1970,,
+43,Burkina Faso,854,BF,BFA,1984,,Formerly known as Upper Volta.
+44,Burma,104,BU,BUR,1970,1989,Renamed as Myanmar.
+45,Burma (Myanmar),104,MM,MMR,2009,,"Formerly known as Burma until 1989, then Myanmar between 1989 and 2009."
+46,Burundi,108,BI,BDI,1970,,
+47,Byelorussian Soviet Socialist Republic,112,BY,BYS,1970,1991,Now known as Belarus.
+48,Cambodia,116,KH,KHM,1989,,"Formerly known as Cambodia in 1970, known as the Khmer Republic between 1970 and 1975, then known as the Democratic Kampuchea between 1975 and 1989."
+49,Cambodia,116,KH,KHM,1970,1970,"Between 1970 and 1975, Cambodia was known as Khmer Republic."
+50,Cameroon,120,CM,CMR,1970,1972,Renamed as the United Republic of Cameroon.
+51,Cameroon,120,CM,CMR,1984,,"Formerly known as Cameroon until 1972, then known as the United Republic of Cameroon between 1972 and 1984."
+52,"Cameroon, United Republic of",120,CM,CMR,1972,1984,Now known as Cameroon.
+53,Canada,124,CA,CAN,1970,,
+55,Cape Verde,132,CV,CPV,1975,,Formerly known as Cape Verde Islands.
+58,Central African Republic,140,CF,CAF,1970,,
+59,Ceylon,144,,,1970,1972,Now known as Sri Lanka.
+60,Chad,148,TD,TCD,1970,,
+61,Chile,152,CL,CHL,1970,,
+62,ChinaFootnote 1,156,CN,CHN,1970,,
+65,Colombia,170,CO,COL,1970,,
+67,Comoros,174,KM,COM,1975,,Comoros without Mayotte; formerly known as Comoro Islands.
+68,"Congo, Democratic Republic of",180,CD,COD,1970,1971,Renamed as Zaire.
+69,"Congo, Republic of the",178,CG,COG,1970,,
+70,"Congo, The Democratic Republic of the",180,CD,COD,1997,,"Formerly known as the Democratic Republic of Congo until 1971, then known as Zaire between 1971 and 1997."
+72,Costa Rica,188,CR,CRI,1970,,
+73,Côte d'Ivoire,384,CI,CIV,1986,,Formerly known as Ivory Coast.
+74,Croatia,191,HR,HRV,1991,,Formerly part of Yugoslavia.
+75,Cuba,192,CU,CUB,1970,,
+76,Curaçao,531,CW,CUW,2010,,Formerly part of Netherlands Antilles.
+77,Cyprus,196,CY,CYP,1970,,
+78,Czech Republic,203,CZ,CZE,1993,,Formerly part of Czechoslovakia.
+79,Czechoslovakia,200,CS,CSK,1970,1993,Divided into Czech Republic and Slovakia.
+80,Dahomey,204,DY,DHY,1970,1977,Now known as Benin.
+81,Denmark,208,DK,DNK,1970,,
+82,Djibouti,262,DJ,DJI,1977,,Formerly known as French Afars and Issas.
+83,Dominica,212,DM,DMA,1970,,
+84,Dominican Republic,214,DO,DOM,1970,,
+85,Dronning Maud Land,216,NQ,ATN,1970,1983,Now part of Antarctica.
+86,East Timor,626,TP,TMP,1975,2002,Now known as Timor-Leste.
+87,Ecuador,218,EC,ECU,1970,,
+88,Egypt,818,EG,EGY,1971,,Formerly known as United Arab Republic.
+89,El Salvador,222,SV,SLV,1970,,
+90,Equatorial Guinea,226,GQ,GNQ,1970,,
+91,Eritrea,232,ER,ERI,1993,,Formerly part of Ethiopia.
+92,Estonia,233,EE,EST,1991,,Formerly part of Union of Soviet Socialist Republics.
+93,Ethiopia,231,ET,ETH,1993,,Ethiopia without Eritrea.
+94,Ethiopia,230,ET,ETH,1970,1993,Ethiopia divided into Eritrea and Ethiopia in 1993.
+99,Fiji,242,FJ,FJI,1970,,
+100,Finland,246,FI,FIN,2004,,Finland without Åland Islands.
+101,Finland,246,FI,FIN,1970,2004,Previously Åland Islands were part of Finland.
+102,France,250,FR,FRA,1970,,
+103,French Afars and Issas,262,AI,AFI,1970,1977,Now known as Djibouti.
+104,French Guiana,254,GF,GUF,1970,,
+105,French Polynesia,258,PF,PYF,1970,,
+106,French Southern and Antarctic Territories,260,FQ,ATF,1970,1979,French Antarctic Territories now part of Antarctica.
+107,French Southern Territories,260,TF,ATF,1979,,French Southern Territories without French Antarctic Territories.
+108,Gabon,266,GA,GAB,1970,,
+109,Gambia,270,GM,GMB,1970,,
+110,Gaza Strip,274,,,1970,1999,Renamed as the Occupied Palestinian Territory.
+111,Georgia,268,GE,GEO,1991,,Formerly part of Union of Soviet Socialist Republics.
+112,German Democratic Republic,278,DD,DDR,1970,1990,Now part of Germany.
+113,Germany,276,DE,DEU,1990,,The German Democratic Republic and the Federal Republic of Germany were merged into Germany in 1990.
+114,"Germany, Federal Republic of",280,DE,DEU,1970,1990,Now part of Germany.
+115,Ghana,288,GH,GHA,1970,,
+116,Gibraltar,292,GI,GIB,1970,,
+119,Greece,300,GR,GRC,1970,,
+120,Greenland,304,GL,GRL,1970,,
+121,Grenada,308,GD,GRD,1970,,
+122,Guadeloupe,312,GP,GLP,2007,,Guadeloupe without Saint Barthélemy and Saint Martin (French part).
+123,Guadeloupe,312,GP,GLP,1970,2007,Previously Saint Barthélemy and Saint Martin (French part) were part of Guadeloupe.
+124,Guam,316,GU,GUM,1970,,
+125,Guatemala,320,GT,GTM,1970,,
+126,Guernsey,831,GG,GGY,2006,2011,"Formerly part of United Kingdom. Since 2011, excludes Sark."
+127,Guernsey,831,GG,GGY,2011,,Previously Sark was part of Guernsey.
+128,Guinea,324,GN,GIN,1970,,
+129,Guinea-Bissau,624,GW,GNB,1974,,Formerly known as Portuguese Guinea.
+130,Guyana,328,GY,GUY,1970,,
+131,Haiti,332,HT,HTI,1970,,
+134,Holy See (Vatican City State),336,VA,VAT,1997,,Formerly known as Vatican City State (Holy See).
+135,Honduras,340,HN,HND,1970,,
+136,Hong Kong,344,HK,HKG,1970,1997,Now known as Hong Kong Special Administrative Region
+137,Hong Kong Special Administrative Region,344,HK,HKG,1997,,Formerly known as Hong Kong
+138,Hungary,348,HU,HUN,1970,,
+139,Iceland,352,IS,ISL,1970,,
+140,India,356,IN,IND,1975,,Now includes Sikkim.
+141,India,356,IN,IND,1970,1975,India without Sikkim.
+142,Indonesia,360,ID,IDN,1970,,
+143,IranFootnote 5,364,IR,IRN,1970,,
+144,Iraq,368,IQ,IRQ,1993,,Now includes a part of Neutral Zone.
+145,Iraq,368,IQ,IRQ,1970,1993,Iraq without a part of Neutral Zone.
+146,"Ireland, Republic of",372,IE,IRL,1970,,
+147,Isle of Man,833,IM,IMN,2006,,Formerly part of United Kingdom.
+148,Israel,376,IL,ISR,1970,,
+149,Italy,380,IT,ITA,1970,,
+150,Ivory Coast,384,CI,CIV,1970,1986,Now known as Côte d'Ivoire.
+151,Jamaica,388,JM,JAM,1970,,
+152,Japan,392,JP,JPN,1970,,
+153,Jersey,832,JE,JEY,2006,,Formerly part of United Kingdom.
+155,Jordan,400,JO,JOR,1970,,
+156,"Kampuchea, Democratic",116,KH,KHM,1975,1989,Now known as Cambodia.
+157,Kazakhstan,398,KZ,KAZ,1991,,Formerly part of Union of Soviet Socialist Republics.
+158,Kenya,404,KE,KEN,1970,,
+159,Khmer Republic,116,KH,KHM,1970,1975,Renamed as the Democratic Kampuchea.
+160,Kiribati,296,KI,KIR,1984,,"The Gilbert and Ellice Islands were divided into Gilbert Islands and Tuvalu in 1975; Gilbert Islands was renamed Kiribati in 1979, then Canton and Enderbury Islands was included with Kiribati in 1984."
+161,Kiribati,296,KI,KIR,1979,1984,Kiribati without Canton and Enderbury Islands; formerly known as Gilbert Islands.
+162,"Korea, NorthFootnote 10",408,KP,PRK,1970,,
+163,"Korea, SouthFootnote 12",410,KR,KOR,1970,,
+164,KosovoFootnote 6,983,XK,XKO,2008,,Formerly part of Serbia.
+165,Kuwait,414,KW,KWT,1970,,
+166,Kyrgyzstan,417,KG,KGZ,1991,,Formerly part of Union of Soviet Socialist Republics.
+167,LaosFootnote 7,418,LA,LAO,1970,,
+168,Latvia,428,LV,LVA,1991,,Formerly part of Union of Soviet Socialist Republics.
+169,Lebanon,422,LB,LBN,1970,,
+170,Lesotho,426,LS,LSO,1970,,
+171,Liberia,430,LR,LBR,1970,,
+172,Libya,434,LY,LBY,1970,,
+173,Liechtenstein,438,LI,LIE,1970,,
+174,Lithuania,440,LT,LTU,1991,,Formerly part of Union of Soviet Socialist Republics.
+175,Luxembourg,442,LU,LUX,1970,,
+176,Macao Special Administrative Region,446,MO,MAC,2002,,Formerly known as Macau Special Administrative Region.
+177,Macau,446,MO,MAC,1970,1999,Renamed as Macau Special Administrative Region.
+178,Macau Special Administrative Region,446,MO,MAC,1999,2002,Now known as Macao Special Administrative Region.
+179,"Macedonia, Republic ofFootnote 8",807,MK,MKD,2009,,Formerly part of Yugoslavia and known as the Former Yugoslav Republic of Macedonia.
+180,"Macedonia, The Former Yugoslav Republic of",807,MK,MKD,1992,2009,Now known as Republic of Macedonia.
+181,Madagascar,450,MG,MDG,1970,,
+182,Malawi,454,MW,MWI,1970,,
+183,Malaysia,458,MY,MYS,1970,,
+184,Maldives,462,MV,MDV,1970,,
+185,Mali,466,ML,MLI,1970,,
+186,Malta,470,MT,MLT,1970,,
+188,Martinique,474,MQ,MTQ,1970,,
+189,Mauritania,478,MR,MRT,1970,,
+190,Mauritius,480,MU,MUS,1970,,
+191,Mayotte,175,YT,MYT,1975,,Formerly part of Comoro Islands.
+192,Mexico,484,MX,MEX,1970,,
+193,"Micronesia, Federated States of",583,FM,FSM,1986,,Formerly part of Pacific Islands (Trust Territory).
+195,MoldovaFootnote 9,498,MD,MDA,1991,,Formerly part of Union of Soviet Socialist Republics.
+196,Monaco,492,MC,MCO,1970,,
+197,Mongolia,496,MN,MNG,1970,,
+198,Montenegro,499,ME,MNE,2006,,Formerly part of Serbia and Montenegro.
+199,Montserrat,500,MS,MSR,1970,,
+200,Morocco,504,MA,MAR,1970,,
+201,Mozambique,508,MZ,MOZ,1970,,
+202,Muscat and Oman,512,,,1970,1971,Now known as Oman.
+203,Myanmar,104,MM,MMR,1989,2009,Now known as Burma (Myanmar).
+204,Namibia,516,NA,NAM,1970,,
+205,Nauru,520,NR,NRU,1970,,
+206,Nepal,524,NP,NPL,1970,,
+207,Netherlands,528,NL,NLD,1970,,
+208,Netherlands Antilles,530,AN,ANT,1986,2010,"Divided into Bonaire, Saint Eustatius and Saba, Curaçao, and Sint Maarten (Dutch part)."
+209,Netherlands Antilles,532,AN,ANT,1970,1986,Divided into Netherlands Antilles and Aruba.
+210,Neutral Zone,536,NT,NTZ,1970,1993,Neutral Zone now divided between Iraq and Saudi Arabia.
+211,New Caledonia,540,NC,NCL,1970,,
+212,New Guinea (Trust Territory),544,,,1970,1973,Now part of Papua New Guinea.
+213,New Hebrides,548,NH,NHB,1970,1980,Now known as Vanuatu.
+214,New Zealand,554,NZ,NZL,1970,,
+215,Nicaragua,558,NI,NIC,1970,,
+216,Niger,562,NE,NER,1970,,
+217,Nigeria,566,NG,NGA,1970,,
+218,Niue,570,NU,NIU,1975,,Formerly known as Niue Island.
+222,Norway,578,NO,NOR,1970,,
+223,Oman,512,OM,OMN,1971,,Formerly known as Muscat and Oman.
+225,Pakistan,586,PK,PAK,1971,,Pakistan without Bangladesh.
+226,Pakistan,586,PK,PAK,1970,1971,Pakistan divided into Bangladesh and Pakistan.
+227,Palau,585,PW,PLW,1986,,Formerly part of Pacific Islands (Trust Territory).
+228,"Palestinian Territory, Occupied",275,PS,PSE,1999,2009,Now known as West Bank and Gaza Strip (Palestine).
+229,Panama,591,PA,PAN,1979,,"Panama, excluding Canal Zone and Panama Canal Zone were merged into Panama in 1979."
+230,Panama Canal Zone,592,PZ,PCZ,1970,1979,Now part of Panama.
+231,"Panama, excluding Canal Zone",590,PA,PAN,1970,1979,Now part of Panama.
+232,Papua,596,,,1970,1973,Now part of Papua New Guinea.
+233,Papua New Guinea,598,PG,PNG,1973,,Papua and New Guinea (Trust Territory) were merged into Papua New Guinea in 1973.
+234,Paraguay,600,PY,PRY,1970,,
+235,Peru,604,PE,PER,1970,,
+236,Philippines,608,PH,PHL,1976,,Alpha-3 code was previously PHI.
+237,Philippines,608,PH,PHI,1970,1976,Alpha-3 code is now PHL.
+238,Pitcairn,612,PN,PCN,1982,,Formerly known as Pitcairn Island.
+240,Poland,616,PL,POL,1970,,
+241,Portugal,620,PT,PRT,1970,,
+242,Portuguese Guinea,624,,,1970,1974,Now known as Guinea-Bissau.
+243,Portuguese Timor,626,TP,TMP,1970,1975,Renamed as East Timor.
+244,Puerto Rico,630,PR,PRI,1970,,
+245,Qatar,634,QA,QAT,1970,,
+246,Réunion,638,RE,REU,1970,,
+247,Romania,642,RO,ROU,2002,,Alpha-3 code was previously ROM.
+248,Romania,642,RO,ROM,1970,2002,Alpha-3 code is now ROU.
+249,Russian Federation,643,RU,RUS,1991,,Formerly part of Union of Soviet Socialist Republics.
+250,Rwanda,646,RW,RWA,1970,,
+251,Saint Barthélemy,652,BL,BLM,2007,,Formerly part of Guadeloupe.
+252,Saint HelenaFootnote 11,654,SH,SHN,1970,,
+253,Saint Kitts and Nevis,659,KN,KNA,1980,,Saint Kitts and Nevis without Anguilla.
+254,Saint Kitts-Nevis-Anguilla,658,KN,KNA,1970,1980,"Divided into Anguilla, and Saint Kitts and Nevis."
+255,Saint Lucia,662,LC,LCA,1970,,
+256,Saint Martin (French part),663,MF,MAF,2007,,Formerly part of Guadeloupe.
+257,Saint Pierre and Miquelon,666,PM,SPM,1970,,
+258,Saint Vincent,670,VC,VCT,1970,1979,Now known as Saint Vincent and the Grenadines.
+259,Saint Vincent and the Grenadines,670,VC,VCT,1979,,Formerly known as Saint Vincent.
+260,Samoa,882,WS,WSM,1981,,Formerly known as Western Samoa.
+261,San Marino,674,SM,SMR,1970,,
+262,Sao Tome and Principe,678,ST,STP,1970,,
+263,Sark,680,XQ,XSQ,2011,,Formerly part of Guernsey.
+264,Saudi Arabia,682,SA,SAU,1993,,Now includes a part of Neutral Zone.
+265,Saudi Arabia,682,SA,SAU,1970,1993,Saudi Arabia without a part of Neutral Zone.
+266,Senegal,686,SN,SEN,1970,,
+267,SerbiaFootnote 2,688,RS,SRB,2008,,Divided into Serbia and Kosovo.
+268,Serbia,688,RS,SRB,2006,2008,Formerly part of Serbia and Montenegro.
+269,Serbia and Montenegro,891,CS,SCG,2003,2006,"Formerly known as Yugoslavia; then divided into Serbia, Montenegro."
+270,Seychelles,690,SC,SYC,1970,,
+271,Sierra Leone,694,SL,SLE,1970,,
+272,Sikkim,698,SK,SKM,1970,1975,Now part of India.
+273,Singapore,702,SG,SGP,1970,,
+274,Sint Maarten (Dutch part),534,SX,SXM,2010,,Formerly part of Netherlands Antilles.
+275,Slovakia,703,SK,SVK,1993,,Formerly part of Czechoslovakia.
+276,Slovenia,705,SI,SVN,1991,,Formerly part of Yugoslavia.
+278,Somalia,706,SO,SOM,1970,,
+279,"South Africa, Republic of",710,ZA,ZAF,1970,,
+281,South Sudan,728,SS,SSD,2011,,Formerly part of Sudan.
+282,Southern Rhodesia,716,RH,RHO,1970,1980,Now known as Zimbabwe.
+283,Spain,724,ES,ESP,1970,,
+284,Spanish Sahara,732,EH,ESH,1970,1976,Now known as Western Sahara.
+285,Sri Lanka,144,LK,LKA,1972,,Formerly known as Ceylon.
+286,Sudan,729,SD,SDN,2011,,South Sudan was previously included with Sudan. The numeric code of Sudan has also been changed.
+287,Sudan,736,SD,SDN,1970,2011,Divided into Sudan and South Sudan.
+288,Suriname,740,SR,SUR,1970,,
+289,Svalbard and Jan Mayen,744,SJ,SJM,1993,,Formerly known as Svalbard and Jan Mayen Islands.
+291,Swaziland,748,SZ,SWZ,1970,,
+292,Sweden,752,SE,SWE,1970,,
+293,Switzerland,756,CH,CHE,1970,,
+294,SyriaFootnote 13,760,SY,SYR,1970,,
+295,Taiwan,158,TW,TWN,1970,,
+296,Tajikistan,762,TJ,TJK,1991,,Formerly part of Union of Soviet Socialist Republics.
+297,TanzaniaFootnote 14,834,TZ,TZA,1970,,
+298,Thailand,764,TH,THA,1970,,
+299,Timor-LesteFootnote 15,626,TL,TLS,2002,,"Formerly known as Portuguese Timor until 1975, then known as East Timor between 1975 and 2002."
+300,Togo,768,TG,TGO,1970,,
+301,Tokelau,772,TK,TKL,1975,,Formerly known as Tokelau Islands.
+303,Tonga,776,TO,TON,1970,,
+304,Trinidad and Tobago,780,TT,TTO,1970,,
+305,Trucial Oman,784,,,1970,1971,Now known as United Arab Emirates.
+306,Tunisia,788,TN,TUN,1970,,
+307,Turkey,792,TR,TUR,1970,,
+308,Turkmenistan,795,TM,TKM,1991,,Formerly part of Union of Soviet Socialist Republics.
+310,Tuvalu,798,TV,TUV,1975,,The Gilbert and Ellice Islands were divided into Gilbert Islands and Tuvalu in 1975.
+311,Uganda,800,UG,UGA,1970,,
+312,Ukraine,804,UA,UKR,1991,,Formerly part of Union of Soviet Socialist Republics; formerly known as Ukraininan Soviet Socialist Republic.
+313,Ukrainian Soviet Socialist Republic,804,UA,UKR,1970,1991,Now known as Ukraine.
+314,Union of Soviet Socialist Republics (Asia part),810,SU,SUN,1970,1991,USSR was divided into 15 countries from which 8 countries are in Asia.
+315,Union of Soviet Socialist Republics (Europe part),810,SU,SUN,1970,1991,USSR was divided into 15 countries from which 7 countries are in Europe.
+316,United Arab Emirates,784,AE,ARE,1971,,Formerly known as Trucial Oman.
+317,United Arab Republic,818,,,1970,1971,Now known as Egypt.
+318,United KingdomFootnote 3Footnote 16,826,GB,GBR,2006,,"United Kingdom without Guernsey, Isle of Man, and Jersey."
+319,United Kingdom,826,GB,GBR,1970,2006,"In 2006, United Kingdom was divided into Guernsey, Isle of Man, Jersey and United Kingdom."
+320,United States,840,US,USA,1970,,
+324,Upper Volta,854,HV,HVO,1970,1984,Now known as Burkina Faso.
+325,Uruguay,858,UY,URY,1970,,
+326,Uzbekistan,860,UZ,UZB,1991,,Formerly part of Union of Soviet Socialist Republics.
+327,Vanuatu,548,VU,VUT,1980,,Formerly known as New Hebrides.
+328,Vatican City State (Holy See),336,VA,VAT,1970,1997,Now known as Holy See (Vatican City State).
+329,VenezuelaFootnote 17,862,VE,VEN,1970,,
+330,Viet NamFootnote 18,704,VN,VNM,1977,,The Democratic Republic of Viet Nam and the Republic of Viet Nam were merged into Viet Nam in 1977.
+331,"Viet Nam, Democratic Republic of",866,VD,VDR,1970,1977,Now part of Viet Nam.
+332,"Viet Nam, Republic of",868,VN,VNM,1970,1977,Now part of Viet Nam.
+336,Wallis and Futuna,876,WF,WLF,1993,,Formerly known as Wallis and Futuna Islands.
+338,West Bank and Gaza Strip (Palestine)Footnote 19,275,PS,PSE,2009,,"Formerly known as Gaza Strip until 1999, then known as the Occupied Palestinian Territory between 1999 and 2009."
+339,Western Sahara,732,EH,ESH,1976,,Formerly known as Spanish Sahara.
+340,Western Samoa,882,WS,WSM,1970,1981,Now known as Samoa.
+341,Yemen,887,YE,YEM,1990,,The Democratic Yemen and Yemen were merged into Yemen in 1990.
+342,Yemen,886,YE,YEM,1970,1990,Now part of Yemen.
+343,"Yemen, Democratic",720,YD,YMD,1970,1990,Now part of Yemen.
+344,Yugoslavia,890,YU,YUG,1970,1991,"Divided into Croatia, Slovenia, and the remainder of Yugoslavia."
+345,Yugoslavia,891,YU,YUG,1992,2003,New numeric code for Yugoslavia and in 2003 Yugoslavia was renamed Serbia and Montenegro.
+346,Yugoslavia,890,YU,YUG,1991,1992,"Divided into Bosnia and Herzegovina, the Former Yugoslav Republic of Macedonia and the remainder of Yugoslavia."
+347,Zaire,180,ZR,ZAR,1971,1997,Now known as the Democratic Republic of the Congo.
+348,Zambia,894,ZM,ZMB,1970,,
