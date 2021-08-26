@@ -17,7 +17,8 @@ from bs4 import BeautifulSoup as bs
 import pickle as pkl
 
 YEARS_FOLDER = "C:\\Users\\claud\\OneDrive\\Documents\\PROJECTS\\Master-Thesis"
-
+COUNTRIES_CODES_PATH = os.path.join(os.getcwd(), "Comtrade", "Reference Table",
+                                    "Comtrade Country Code and ISO list.xls")
 
 def get_iso2_long_lat():
     if not os.path.exists("./Data/iso2_long_lat.pkl"):
@@ -54,7 +55,28 @@ def get_iso2_long_lat():
     return cc
 
 
-def load_from_WITS(folder=YEARS_FOLDER, t1=1989, t2=1989) -> List[nx.MultiGraph]:
+def from_edgelist_to_pd(edgelist, values):
+    df_convert = pd.read_excel(COUNTRIES_CODES_PATH)
+    edgelist = np.asarray(edgelist)
+    for i in range(len(edgelist)):
+        c1 = df_convert[df_convert["Country Code"] == edgelist[i, 0]]["ISO3-digit Alpha"]
+        c2 = df_convert[df_convert["Country Code"]==edgelist[i,1]]["ISO3-digit Alpha"]
+        edgelist[i, 0] = c1
+        edgelist[i, 1] = c2
+
+    for i in range(len(edgelist)):
+        edgelist[i,0] = df_convert[edgelist[i,0]]
+        edgelist[i,1] = df_convert[edgelist[i,1]]
+
+    df = pd.DataFrame({"code1":edgelist[:,0], "code2":edgelist[:1], "prod":edgelist[:,2], "tv":values})
+    G = nx.from_pandas_edgelist(df=df,
+                                source="code1", target="code2", edge_attr=["tv"],
+                                edge_key="prod", create_using=nx.MultiDiGraph())
+
+    return G
+
+
+def load_from_WITS(folder=YEARS_FOLDER, t1=1989, t2=1989):
     years = np.arange(t1, t2 + 1)
     for y in years:
         if y > 1999:

@@ -13,13 +13,12 @@ import pickle as pkl
 import eventlet
 from eventlet.greenpool import GreenPool
 import matplotlib.pyplot as plt
-import http.client
-
+import tqdm
 # import cpi
 
 
 # cpi.update()
-# os.chdir("../")
+os.chdir("../")
 
 COUNTRIES_CODES_PATH = os.path.join(os.getcwd(), "Comtrade", "Reference Table",
                                     "Comtrade Country Code and ISO list.xls")
@@ -193,26 +192,117 @@ def get_data(country1: [str], country2: [str], commodity: [str], flow=(1,), freq
         proxy_ = urllib.request.ProxyHandler(proxy)
         opener = urllib.request.build_opener(proxy_)
         try:
-            print("Trying " + COMTRADE_URL + data + " + " + str(proxy))
-            with opener.open(req, timeout=260) as response:
+            #print("Trying " + COMTRADE_URL + data + " + " + str(proxy))
+            with opener.open(req, timeout=120) as response:
                 data_response = response.read()
         except Exception as e:
-            print(f"Download not successful because of {e} for proxy {proxy}")
+            #print(f"Download not successful because of {e} for proxy {proxy}")
             return [{"Error": 1}]
     else:
         print(COMTRADE_URL + data)
         try:
-            with urllib.request.urlopen(req, timeout=260) as response:
+            with urllib.request.urlopen(req, timeout=120) as response:
                 data_response = response.read()
                 eventlet.sleep(2)
         except Exception as e:
-            print(f"Tried without proxy after {n_tries} and got error {e}")
+            #print(f"Tried without proxy after {n_tries} and got error {e}")
             return [{"Error": 1}]
 
     data_parsed = json.loads(data_response)
     data_parsed = data_parsed["dataset"]
-    print(f"SUCCESS for {data} + {proxy}")
+    #print(f"SUCCESS for {data} + {proxy}")
     return data_parsed
+
+
+class AppURLopener(urllib.request.FancyURLopener):
+    version = "Mozilla/5.0"
+
+
+def scrape_proxy():
+    URL = "https://www.sslproxies.org/"
+    URL2 = "https://proxylist.geonode.com/api/proxy-list?limit=200&page=1&sort_by=lastChecked&sort_type=desc"
+
+    list1 = []
+    fancy = AppURLopener()
+    with fancy.open(URL2) as resp:
+        resp = resp.read()
+    resp = json.loads(resp)["data"]
+    for r in resp:
+        if r['ip']:
+            list1.append({f"{r['protocols'][0]}": f"{r['ip']}:{r['port']}"})
+
+    list2 = []
+    req = urllib.request.Request(URL, None, headers={"User-Agent": "Chrome/35.0.1916.47 "})
+    resp = urllib.request.urlopen(req).read()
+    doc = bs(resp, "html.parser")
+    trs = doc.findAll("tr")
+    for tr in trs:
+        tds = tr.findAll("td")
+        prox = {}
+        prox_url = ""
+        prox_port = ""
+        sec = ""
+        for i, td in enumerate(tds):
+            if i == 0:
+                prox_url = td.getText()
+            if i == 1:
+                prox_port = td.getText()
+            if i == 6:
+                prox_sec = td.getText()
+                if prox_sec == "yes":
+                    sec = "https"
+                else:
+                    sec = "http"
+        prox[sec] = prox_url + "".join([":", str(prox_port)])
+        list2.append(prox)
+    list2 = list2[1:-8]
+    with open("Data/proxies.txt", "r") as file:
+        list3 = file.readlines()
+    list3_dict = []
+    for line in list3:
+        l = line.split(" ")
+        ip_port = l[0]
+        if len(set(l[-2].split("-"))) == 3:
+            list3_dict.append({"https": ip_port})
+        else:
+            list3_dict.append({"http": ip_port})
+    list1.extend(list3_dict)
+    list1.extend(list2)
+    return list1
+
+
+def check_proxy_alive(proxy):
+    proxy_ = urllib.request.ProxyHandler(proxy)
+    opener = urllib.request.build_opener(proxy_)
+    try:
+        opener.open("https://comtrade.un.org/Data/", timeout=30).close()
+    except Exception as e:
+        print(e)
+        return None
+    else:
+        print(proxy)
+        return proxy
+
+
+def parallelize_check_proxy(proxies: [dict]):
+    avail_proxies = []
+    eventlet.monkey_patch()
+    pool = GreenPool(250)
+
+    for proxy in pool.imap(check_proxy_alive, proxies):
+        if proxy is not None:
+            avail_proxies.append(proxy)
+            # print(proxy)
+    return avail_proxies
+
+
+def parallelize_get_data_requests(params):
+    data_list = []
+    eventlet.monkey_patch(thread=True)
+    pool = eventlet.GreenPool(len(params))
+    for data in pool.starmap(get_data, params):
+        data_list.append(data)
+    return data_list
 
 
 def check_years_data_availability(codes=None, save=True):
@@ -330,15 +420,17 @@ def select_most_avail_countries(quantile=0.5):
             print(c, len(y), df[df["Country Code"] == int(c)]["Country Name, Full "].values[0])
 
 
-def link_func(gt, edge_list, param_idx, q, seen: set):
-    data = gt.wait()
+def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy:eventlet.Queue=None, proxy=None):
+    if gt is not None:
+        data = gt.wait()
+    elif data is None:
+        raise Exception("Data cannot be None if no gt is available")
     row = {}
     error = False
     for row in data:
         row = dict(row)
         if "Error" in row.keys():
             q.put(param_idx)
-            print("Q size link function: " + str(q.qsize()))
             error = True
             break
         elif bool(row):
@@ -347,9 +439,12 @@ def link_func(gt, edge_list, param_idx, q, seen: set):
             c2 = row["ptCode"]
             p = row["cmdCode"]
             tv = row["TradeValue"]
-            e = [y, c1, c2, int(p), tv]
+            e = [y, c1, c2, str(p), tv]
             edge_list.append(e)
             seen.add(param_idx)
+
+    if q_proxy is not None and not error:
+        q_proxy.put(proxy)
 
     if bool(row) and not error:
         with open(COMTRADE_DATASET, "wb") as file:
@@ -357,7 +452,8 @@ def link_func(gt, edge_list, param_idx, q, seen: set):
         with open(SEEN_PARAMS, "wb") as file:
             pkl.dump(seen, file)
     elif not bool(row) and not error:
-        print("Data empty")
+        #print("Data empty")
+        pass
 
 
 def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=True):
@@ -391,10 +487,10 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
                                                      8: str, 9: str, 10: str})
         s1 = list(set(conversion_table[reporting_code].dropna().astype(str).str[:2].to_list()))
         # s1 = [s for s in s1_h1.keys()]
-        div_s, mod_s = divmod(len(s1), 20)
-        s1_pad = [""] * (20 - mod_s)
+        div_s, mod_s = divmod(len(s1), 19)
+        s1_pad = [""] * (19 - mod_s)
         s1.extend(s1_pad)
-        s1 = np.asarray(s1).reshape(-1, 20).tolist()
+        s1 = np.asarray(s1).reshape(-1, 19).tolist()
 
         for y, c in zip(df_avail.keys(), df_avail.values()):
             div_l, mod_l = divmod(len(c), 5)
@@ -443,139 +539,73 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
     threads = 200
     pool = eventlet.GreenPool(threads)
     q = eventlet.Queue()
+    q_proxy = eventlet.Queue()
     for idx in params_idx:
         q.put(idx)
-    use_my = True
+
+    use_my = False
     time_to_check = time.time()
-    while not q.empty():
-        if use_proxy:
-            proxies = scrape_proxy()
-            proxies = parallelize_check_proxy(proxies)
-            batch_size = len(proxies)
-            batches = q.qsize() // batch_size + 1
-            for i in range(batches):
-                print(f"Batch {i}")
-                if i == (batches - 1):
-                    batch_size == len(params) - q.qsize()
-                for j in range(batch_size):
+    time_to_check_proxy = time.time()
+    initial_q = q.qsize()
+    bar = tqdm.tqdm(initial_q)
+
+    while True:
+        while not q.empty():
+            if use_proxy:
+                t = time.time()
+                if t > time_to_check_proxy:
+                    proxies = scrape_proxy()
+                    proxies = parallelize_check_proxy(proxies)
+                    for proxy in proxies:
+                        q_proxy.put(proxy)
+                    time_to_check = 60 * 60 + time.time()
+                # batch_size = len(proxies)
+                # batches = q.qsize() // batch_size + 1
+                batch_counter = 0
+                while not q_proxy.empty():
+                    proxy = q_proxy.get()
                     idx = q.get()
-                    thread_param = (*params[idx], proxies[j])
+                    print("Spawning proxy")
+                    thread_param = (*params[idx], proxy)
                     thread = pool.spawn(get_data, *thread_param)
-                    thread.link(link_func, edge_list, idx, q, seen)
-                pool.waitall()
-                # print("Sleeping")
-        if time.time() > time_to_check and use_my is False:
-            try:
-                idx = q.get()
-                thread_param = (*params[idx], None)
-                thread = pool.spawn(get_data, *thread_param)
-                thread.wait()
-            except http.client.CONFLICT as e:
-                print(f"Cannot Use My Machine because of Exception {e}")
-                time_to_check = 60 * 60 + time.time()
-            except Exception as e:
-                print(f"Trying with my machine Exception {e}")
-            else:
-                use_my = True
+                    thread.link(link_func, edge_list, idx, q, seen, q_proxy=q_proxy, proxy=proxy)
+                    batch_counter += 1
+                    if not batch_counter % threads:
+                        pool.waitall()
+                    #bar.update(initial_q - q.qsize())
 
-        if use_my is True:
-            try:
-                idx = q.get()
-                thread_param = (*params[idx], None)
-                thread = pool.spawn(get_data, *thread_param)
-                thread.link(link_func, edge_list, idx, q, seen)
-                thread.wait()
-            except http.client.CONFLICT as e:
-                print(f"Cannot Use My Machine because of Exception {e}")
-                time_to_check = 60 * 60 + time.time()
-                use_my = False
+                    t = time.time()
+                    if t > time_to_check and use_my is False:
+                        for i in range(100):
+                            try:
+                                print("Spawning without proxy")
+                                idx = q.get()
+                                thread_param = (*params[idx], None)
+                                thread = pool.spawn(get_data, *thread_param)
+                                result = thread.wait()
 
-class AppURLopener(urllib.request.FancyURLopener):
-    version = "Mozilla/5.0"
-
-
-def scrape_proxy():
-    URL = "https://www.sslproxies.org/"
-    URL2 = "https://proxylist.geonode.com/api/proxy-list?limit=200&page=1&sort_by=lastChecked&sort_type=desc"
-
-    list1 = []
-    fancy = AppURLopener()
-    with fancy.open(URL2) as resp:
-        resp = resp.read()
-    resp = json.loads(resp)["data"]
-    for r in resp:
-        if r['ip']:
-            list1.append({f"{r['protocols'][0]}": f"{r['ip']}:{r['port']}"})
-
-    list2 = []
-    req = urllib.request.Request(URL, None, headers={"User-Agent": "Chrome/35.0.1916.47 "})
-    resp = urllib.request.urlopen(req).read()
-    doc = bs(resp, "html.parser")
-    trs = doc.findAll("tr")
-    for tr in trs:
-        tds = tr.findAll("td")
-        prox = {}
-        prox_url = ""
-        prox_port = ""
-        sec = ""
-        for i, td in enumerate(tds):
-            if i == 0:
-                prox_url = td.getText()
-            if i == 1:
-                prox_port = td.getText()
-            if i == 6:
-                prox_sec = td.getText()
-                if prox_sec == "yes":
-                    sec = "https"
-                else:
-                    sec = "http"
-        prox[sec] = prox_url + "".join([":", str(prox_port)])
-        list2.append(prox)
-    list2 = list2[1:-8]
-    list1.extend(list2)
-    return list1
-
-
-def check_proxy_alive(proxy):
-    proxy_ = urllib.request.ProxyHandler(proxy)
-    opener = urllib.request.build_opener(proxy_)
-    try:
-        opener.open("https://comtrade.un.org/Data/", timeout=60).close()
-    except Exception as e:
-        print(e)
-        return None
-    else:
-        print(proxy)
-        return proxy
-
-
-def parallelize_check_proxy(proxies: [dict]):
-    avail_proxies = []
-    eventlet.monkey_patch()
-    pool = GreenPool(len(proxies))
-
-    for proxy in pool.imap(check_proxy_alive, proxies):
-        if proxy is not None:
-            avail_proxies.append(proxy)
-            # print(proxy)
-    return avail_proxies
-
-
-def parallelize_get_data_requests(params):
-    data_list = []
-    eventlet.monkey_patch(thread=True)
-    pool = eventlet.GreenPool(len(params))
-    for data in pool.starmap(get_data, params):
-        data_list.append(data)
-    return data_list
+                            except urllib.error.HTTPError as e:
+                                if e.code == 409:
+                                    #print(f"Cannot Use My Machine because of Exception {e}")
+                                    time_to_check = 60 * 60 + time.time()
+                                    q.put(idx)
+                                    use_my = False
+                            except Exception as e:
+                                #print(f"Trying with my machine Exception {e}")
+                                q.put(idx)
+                            else:
+                                use_my = True
+                                link_func(None, edge_list=edge_list, param_idx=idx, q=q, seen=seen, data=result)
 
 
 if __name__ == "__main__":
     parser = arg.ArgumentParser()
     parser.add_argument("-month", action="store_true", help="Monthly or Annual, default = Annual")
     parser.add_argument("--flow", type=int, default=1, help="1 for import, 2 for export")
+    parser.add_argument("--proxy", action="store_true", help="Use proxy")
     args = parser.parse_args()
     monthly = args.month
+    proxy = args.proxy
     flow = args.flow
     flow = [str(flow)]
 
@@ -586,4 +616,4 @@ if __name__ == "__main__":
         save_path = ANNUAL_DATA_PATH
         frequency = "A"
     # load_countries_codes()
-    build_dataset(flow=flow)
+    build_dataset(flow=flow, use_proxy=proxy)
