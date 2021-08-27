@@ -14,6 +14,7 @@ import eventlet
 from eventlet.greenpool import GreenPool
 import matplotlib.pyplot as plt
 import tqdm
+
 # import cpi
 
 
@@ -192,25 +193,25 @@ def get_data(country1: [str], country2: [str], commodity: [str], flow=(1,), freq
         proxy_ = urllib.request.ProxyHandler(proxy)
         opener = urllib.request.build_opener(proxy_)
         try:
-            #print("Trying " + COMTRADE_URL + data + " + " + str(proxy))
+            print("Trying " + COMTRADE_URL + data + " + " + str(proxy))
             with opener.open(req, timeout=120) as response:
                 data_response = response.read()
         except Exception as e:
-            #print(f"Download not successful because of {e} for proxy {proxy}")
+            print(f"Download not successful because of {e} for proxy {proxy}")
             return [{"Error": 1}]
     else:
-        print(COMTRADE_URL + data)
+        print("Trying " + COMTRADE_URL + data)
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
                 data_response = response.read()
                 eventlet.sleep(2)
         except Exception as e:
-            #print(f"Tried without proxy after {n_tries} and got error {e}")
+            # print(f"Tried without proxy after {n_tries} and got error {e}")
             return [{"Error": 1}]
 
     data_parsed = json.loads(data_response)
     data_parsed = data_parsed["dataset"]
-    #print(f"SUCCESS for {data} + {proxy}")
+    # print(f"SUCCESS for {data} + {proxy}")
     return data_parsed
 
 
@@ -420,7 +421,7 @@ def select_most_avail_countries(quantile=0.5):
             print(c, len(y), df[df["Country Code"] == int(c)]["Country Name, Full "].values[0])
 
 
-def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy:eventlet.Queue=None, proxy=None):
+def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy: eventlet.Queue = None, proxy=None):
     if gt is not None:
         data = gt.wait()
     elif data is None:
@@ -451,8 +452,9 @@ def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy:eventle
             pkl.dump(edge_list, file)
         with open(SEEN_PARAMS, "wb") as file:
             pkl.dump(seen, file)
+            print(f"Q-size {q.qsize()}")
     elif not bool(row) and not error:
-        #print("Data empty")
+        # print("Data empty")
         pass
 
 
@@ -546,8 +548,6 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
     use_my = False
     time_to_check = time.time()
     time_to_check_proxy = time.time()
-    initial_q = q.qsize()
-    bar = tqdm.tqdm(initial_q)
 
     while True:
         while not q.empty():
@@ -570,10 +570,6 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
                     thread = pool.spawn(get_data, *thread_param)
                     thread.link(link_func, edge_list, idx, q, seen, q_proxy=q_proxy, proxy=proxy)
                     batch_counter += 1
-                    if not batch_counter % threads:
-                        pool.waitall()
-                    #bar.update(initial_q - q.qsize())
-
                     t = time.time()
                     if t > time_to_check and use_my is False:
                         for i in range(100):
@@ -586,16 +582,20 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
 
                             except urllib.error.HTTPError as e:
                                 if e.code == 409:
-                                    #print(f"Cannot Use My Machine because of Exception {e}")
+                                    # print(f"Cannot Use My Machine because of Exception {e}")
                                     time_to_check = 60 * 60 + time.time()
                                     q.put(idx)
                                     use_my = False
                             except Exception as e:
-                                #print(f"Trying with my machine Exception {e}")
+                                # print(f"Trying with my machine Exception {e}")
                                 q.put(idx)
                             else:
+                                batch_counter += 1
                                 use_my = True
                                 link_func(None, edge_list=edge_list, param_idx=idx, q=q, seen=seen, data=result)
+                    spawn_threads = threads if use_my is False else threads + 100
+                    if not batch_counter % spawn_threads:
+                        pool.waitall()
 
 
 if __name__ == "__main__":
