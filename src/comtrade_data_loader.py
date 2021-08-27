@@ -446,7 +446,8 @@ def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy: eventl
 
     if q_proxy is not None and not error:
         q_proxy.put(proxy)
-
+    if q_proxy is not None and error:
+        print(f"Removing from Queue Proxy {proxy}")
     if bool(row) and not error:
         with open(COMTRADE_DATASET, "wb") as file:
             pkl.dump(edge_list, file)
@@ -454,7 +455,7 @@ def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy: eventl
             pkl.dump(seen, file)
             print(f"Q-size {q.qsize()}")
     elif not bool(row) and not error:
-        # print("Data empty")
+        print("Data empty")
         pass
 
 
@@ -553,7 +554,7 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
         while not q.empty():
             if use_proxy:
                 t = time.time()
-                if t > time_to_check_proxy:
+                if t > time_to_check_proxy or q_proxy.empty():
                     proxies = scrape_proxy()
                     proxies = parallelize_check_proxy(proxies)
                     for proxy in proxies:
@@ -571,30 +572,27 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
                     thread.link(link_func, edge_list, idx, q, seen, q_proxy=q_proxy, proxy=proxy)
                     batch_counter += 1
                     t = time.time()
-                    if t > time_to_check and use_my is False:
-                        for i in range(100):
-                            try:
-                                print("Spawning without proxy")
-                                idx = q.get()
-                                thread_param = (*params[idx], None)
-                                thread = pool.spawn(get_data, *thread_param)
-                                result = thread.wait()
+                    if t > time_to_check:
+                        try:
+                            print("Spawning without proxy")
+                            idx = q.get()
+                            thread_param = (*params[idx], None)
+                            thread = pool.spawn(get_data, *thread_param)
+                            result = thread.wait()
 
-                            except urllib.error.HTTPError as e:
-                                if e.code == 409:
-                                    # print(f"Cannot Use My Machine because of Exception {e}")
-                                    time_to_check = 60 * 60 + time.time()
-                                    q.put(idx)
-                                    use_my = False
-                            except Exception as e:
-                                # print(f"Trying with my machine Exception {e}")
+                        except urllib.error.HTTPError as e:
+                            if e.code == 409:
+                                print(f"Cannot Use My Machine because of Exception {e}")
+                                time_to_check = 60 * 60 + time.time()
                                 q.put(idx)
-                            else:
-                                batch_counter += 1
-                                use_my = True
-                                link_func(None, edge_list=edge_list, param_idx=idx, q=q, seen=seen, data=result)
-                    spawn_threads = threads if use_my is False else threads + 100
-                    if not batch_counter % spawn_threads:
+                        except Exception as e:
+                            print(f"Trying with my machine Exception {e}")
+                            q.put(idx)
+                        else:
+                            link_func(None, edge_list=edge_list, param_idx=idx, q=q, seen=seen, data=result)
+
+                    spawn_threads = threads #if use_my is False else threads
+                    if not batch_counter % threads:
                         pool.waitall()
 
 
