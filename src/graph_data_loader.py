@@ -20,6 +20,7 @@ YEARS_FOLDER = "C:\\Users\\claud\\OneDrive\\Documents\\PROJECTS\\Master-Thesis"
 COUNTRIES_CODES_PATH = os.path.join(os.getcwd(), "Comtrade", "Reference Table",
                                     "Comtrade Country Code and ISO list.xls")
 
+
 def get_iso2_long_lat():
     if not os.path.exists("./Data/iso2_long_lat.pkl"):
         print("loading from website")
@@ -60,20 +61,35 @@ def from_edgelist_to_pd(edgelist, values):
     edgelist = np.asarray(edgelist)
     for i in range(len(edgelist)):
         c1 = df_convert[df_convert["Country Code"] == edgelist[i, 0]]["ISO3-digit Alpha"]
-        c2 = df_convert[df_convert["Country Code"]==edgelist[i,1]]["ISO3-digit Alpha"]
+        c2 = df_convert[df_convert["Country Code"] == edgelist[i, 1]]["ISO3-digit Alpha"]
         edgelist[i, 0] = c1
         edgelist[i, 1] = c2
 
     for i in range(len(edgelist)):
-        edgelist[i,0] = df_convert[edgelist[i,0]]
-        edgelist[i,1] = df_convert[edgelist[i,1]]
+        edgelist[i, 0] = df_convert[edgelist[i, 0]]
+        edgelist[i, 1] = df_convert[edgelist[i, 1]]
 
-    df = pd.DataFrame({"code1":edgelist[:,0], "code2":edgelist[:1], "prod":edgelist[:,2], "tv":values})
+    df = pd.DataFrame({"code1": edgelist[:, 0], "code2": edgelist[:1], "prod": edgelist[:, 2], "tv": values})
     G = nx.from_pandas_edgelist(df=df,
                                 source="code1", target="code2", edge_attr=["tv"],
                                 edge_key="prod", create_using=nx.MultiDiGraph())
 
     return G
+
+
+def select_edges(edge_list: [(int, int, str)], values: [int], years: [int], code1: [str], code2: [str],
+                 products: [str]):
+    subgraph_edgelist = []
+    subgraph_values = []
+    for row, tv in zip(edge_list, values):
+        y = row[0]
+        c1 = row[1]
+        c2 = row[2]
+        p = row[3]
+        if y in years and c1 in code1 and c2 in code2 and p in products:
+            subgraph_edgelist.append((y, c1, c2, p))
+            subgraph_values.append(tv)
+    return subgraph_edgelist, subgraph_values
 
 
 def load_from_WITS(folder=YEARS_FOLDER, t1=1989, t2=1989):

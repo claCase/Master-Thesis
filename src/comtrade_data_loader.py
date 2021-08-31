@@ -167,9 +167,9 @@ def get_data(country1: [str], country2: [str], commodity: [str], flow=(1,), freq
     if month[0] != "" or year[0] != "all":
         for z, (i, j) in enumerate(product(year, month)):
             if z != len(year) * len(month):
-                date = "".join([i, j, ","])[:-1]
+                date = "".join([str(i), str(j), ","])[:-1]
             else:
-                date = "".join([i, j])
+                date = "".join([str(i), str(j)])
             dates.append(date)
         ps = ",".join(dates)
     else:
@@ -188,7 +188,8 @@ def get_data(country1: [str], country2: [str], commodity: [str], flow=(1,), freq
     }
     data = "".join([f"{key}={value}&" for key, value in zip(values.keys(), values.values())])[:-1]
     # data = urllib.parse.urlencode(data)
-    req = urllib.request.Request(COMTRADE_URL + data, None, headers={"User-Agent": "Chrome/35.0.1916.47"})
+    headers = {"User-Agent": "Chrome/35.0.1916.47"}
+    req = urllib.request.Request(COMTRADE_URL + data, None, headers=headers)
     if proxy is not None:
         proxy_ = urllib.request.ProxyHandler(proxy)
         opener = urllib.request.build_opener(proxy_)
@@ -196,6 +197,10 @@ def get_data(country1: [str], country2: [str], commodity: [str], flow=(1,), freq
             print("Trying " + COMTRADE_URL + data + " + " + str(proxy))
             with opener.open(req, timeout=120) as response:
                 data_response = response.read()
+        except urllib.error.HTTPError as e:
+            print(f"Download not successful because of {e} for proxy {proxy}")
+            return [{"Error": 1}]
+
         except Exception as e:
             print(f"Download not successful because of {e} for proxy {proxy}")
             return [{"Error": 1}]
@@ -205,8 +210,17 @@ def get_data(country1: [str], country2: [str], commodity: [str], flow=(1,), freq
             with urllib.request.urlopen(req, timeout=120) as response:
                 data_response = response.read()
                 eventlet.sleep(2)
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                print(f"HTTP error {e.code}")
+                # return [{"Error":409}]
+                raise urllib.error.HTTPError(COMTRADE_URL + data,
+                                             409,
+                                             "Conflict",
+                                             headers,
+                                             None)
         except Exception as e:
-            # print(f"Tried without proxy after {n_tries} and got error {e}")
+            print(f"Tried without proxy after and got error {e}")
             return [{"Error": 1}]
 
     data_parsed = json.loads(data_response)
@@ -268,7 +282,7 @@ def scrape_proxy():
         else:
             list3_dict.append({"http": ip_port})
     list1.extend(list3_dict)
-    list1.extend(list2)
+    #list1.extend(list2)
     return list1
 
 
@@ -422,12 +436,13 @@ def select_most_avail_countries(quantile=0.5):
 
 
 def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy: eventlet.Queue = None, proxy=None):
+    error = False
     if gt is not None:
         data = gt.wait()
+
     elif data is None:
         raise Exception("Data cannot be None if no gt is available")
     row = {}
-    error = False
     for row in data:
         row = dict(row)
         if "Error" in row.keys():
@@ -526,6 +541,7 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
             seen = pkl.load(seen_params)
             params_idx = np.arange(0, len(params))
             params_idx = np.delete(params_idx, list(seen))
+            print(f"Total params to spawn: {len(params_idx)}")
     else:
         seen = set()
         params_idx = np.arange(0, len(params))
@@ -550,50 +566,51 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
     time_to_check = time.time()
     time_to_check_proxy = time.time()
 
-    while True:
-        while not q.empty():
-            if use_proxy:
-                t = time.time()
-                if t > time_to_check_proxy or q_proxy.empty():
-                    proxies = scrape_proxy()
-                    proxies = parallelize_check_proxy(proxies)
-                    for proxy in proxies:
-                        q_proxy.put(proxy)
+
+    while not q.empty():
+        if use_proxy:
+            t = time.time()
+            if t > time_to_check_proxy or q_proxy.empty():
+                proxies = scrape_proxy()
+                proxies = parallelize_check_proxy(proxies)
+                for proxy in proxies:
+                    q_proxy.put(proxy)
+                time_to_check = 60 * 60 + time.time()
+            # batch_size = len(proxies)
+            # batches = q.qsize() // batch_size + 1
+            batch_counter = 0
+            while not q_proxy.empty():
+                proxy = q_proxy.get()
+                idx = q.get()
+                print("Spawning proxy")
+                thread_param = (*params[idx], proxy)
+                thread = pool.spawn(get_data, *thread_param)
+                thread.link(link_func, edge_list, idx, q, seen, q_proxy=q_proxy, proxy=proxy)
+                batch_counter += 1
+
+                # spawn_threads = threads #if use_my is False else threads
+                if not batch_counter % threads:
+                    pool.waitall()
+
+        t = time.time()
+        if t > time_to_check:
+            try:
+                print("Spawning without proxy")
+                idx = q.get()
+                thread_param = (*params[idx], None)
+                thread = pool.spawn(get_data, *thread_param)
+                result = thread.wait()
+            except urllib.error.HTTPError as e:
+                if e.code == 409:
+                    print(f"Cannot Use My Machine because of Exception {e}")
                     time_to_check = 60 * 60 + time.time()
-                # batch_size = len(proxies)
-                # batches = q.qsize() // batch_size + 1
-                batch_counter = 0
-                while not q_proxy.empty():
-                    proxy = q_proxy.get()
-                    idx = q.get()
-                    print("Spawning proxy")
-                    thread_param = (*params[idx], proxy)
-                    thread = pool.spawn(get_data, *thread_param)
-                    thread.link(link_func, edge_list, idx, q, seen, q_proxy=q_proxy, proxy=proxy)
-                    batch_counter += 1
-                    t = time.time()
-                    if t > time_to_check:
-                        try:
-                            print("Spawning without proxy")
-                            idx = q.get()
-                            thread_param = (*params[idx], None)
-                            thread = pool.spawn(get_data, *thread_param)
-                            result = thread.wait()
-
-                        except urllib.error.HTTPError as e:
-                            if e.code == 409:
-                                print(f"Cannot Use My Machine because of Exception {e}")
-                                time_to_check = 60 * 60 + time.time()
-                                q.put(idx)
-                        except Exception as e:
-                            print(f"Trying with my machine Exception {e}")
-                            q.put(idx)
-                        else:
-                            link_func(None, edge_list=edge_list, param_idx=idx, q=q, seen=seen, data=result)
-
-                    spawn_threads = threads #if use_my is False else threads
-                    if not batch_counter % threads:
-                        pool.waitall()
+                    q.put(idx)
+            except Exception as e:
+                print(f"Trying with my machine Exception {e}")
+                q.put(idx)
+            else:
+                link_func(None, edge_list=edge_list, param_idx=idx, q=q, seen=seen, data=result)
+    print("Queue empty")
 
 
 if __name__ == "__main__":
