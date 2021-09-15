@@ -282,7 +282,7 @@ def scrape_proxy():
         else:
             list3_dict.append({"http": ip_port})
     list1.extend(list3_dict)
-    #list1.extend(list2)
+    list1.extend(list2)
     return list1
 
 
@@ -435,7 +435,7 @@ def select_most_avail_countries(quantile=0.5):
             print(c, len(y), df[df["Country Code"] == int(c)]["Country Name, Full "].values[0])
 
 
-def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy: eventlet.Queue = None, proxy=None):
+def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy: eventlet.Queue = None, proxy=None, save_path=COMTRADE_DATASET):
     error = False
     if gt is not None:
         data = gt.wait()
@@ -464,7 +464,7 @@ def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy: eventl
     if q_proxy is not None and error:
         print(f"Removing from Queue Proxy {proxy}")
     if bool(row) and not error:
-        with open(COMTRADE_DATASET, "wb") as file:
+        with open(save_path, "wb") as file:
             pkl.dump(edge_list, file)
         with open(SEEN_PARAMS, "wb") as file:
             pkl.dump(seen, file)
@@ -562,12 +562,21 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
     for idx in params_idx:
         q.put(idx)
 
-    use_my = False
     time_to_check = time.time()
     time_to_check_proxy = time.time()
-
-
+    save_path = COMTRADE_DATASET
     while not q.empty():
+        if os.path.getsize(save_path) > 60e6:
+            i = 0
+            new_file = save_path[:-4] + f"_{i}.pkl"
+            while os.path.exists(new_file):
+                i += 1
+                new_file = save_path[:-4] + f"_{i}.pkl"
+            print(f"creating new file {new_file}")
+            open(new_file, "a").close()
+            save_path = new_file
+            edge_list = []
+
         if use_proxy:
             t = time.time()
             if t > time_to_check_proxy or q_proxy.empty():
@@ -576,21 +585,19 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
                 for proxy in proxies:
                     q_proxy.put(proxy)
                 time_to_check = 60 * 60 + time.time()
-            # batch_size = len(proxies)
-            # batches = q.qsize() // batch_size + 1
-            batch_counter = 0
-            while not q_proxy.empty():
-                proxy = q_proxy.get()
-                idx = q.get()
-                print("Spawning proxy")
-                thread_param = (*params[idx], proxy)
-                thread = pool.spawn(get_data, *thread_param)
-                thread.link(link_func, edge_list, idx, q, seen, q_proxy=q_proxy, proxy=proxy)
-                batch_counter += 1
 
-                # spawn_threads = threads #if use_my is False else threads
-                if not batch_counter % threads:
-                    pool.waitall()
+            batch_counter = 0
+
+            proxy = q_proxy.get()
+            idx = q.get()
+            print("Spawning proxy")
+            thread_param = (*params[idx], proxy)
+            thread = pool.spawn(get_data, *thread_param)
+            thread.link(link_func, edge_list, idx, q, seen, q_proxy=q_proxy, proxy=proxy, save_path=save_path)
+            batch_counter += 1
+
+            if not batch_counter % threads:
+                pool.waitall()
 
         t = time.time()
         if t > time_to_check:
@@ -609,8 +616,22 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
                 print(f"Trying with my machine Exception {e}")
                 q.put(idx)
             else:
-                link_func(None, edge_list=edge_list, param_idx=idx, q=q, seen=seen, data=result)
+                link_func(None, edge_list=edge_list, param_idx=idx, q=q, seen=seen, data=result, save_path=save_path)
     print("Queue empty")
+
+
+def join_pickles(file_name_match, folder):
+    import re
+    data = []
+    for dirs, folders, files in os.walk(os.path.join(folder)):
+        for file in files:
+            if re.match(file_name_match, file):
+                print(f"filename: {file}")
+                with open(os.path.join(folder,file), "rb") as f:
+                    d = pkl.load(f)
+                    data.extend(d)
+    with open(os.path.join(folder, file_name_match + "_joined_complete.pkl"), "wb") as f:
+        pkl.dump(data, f)
 
 
 if __name__ == "__main__":
@@ -618,11 +639,13 @@ if __name__ == "__main__":
     parser.add_argument("-month", action="store_true", help="Monthly or Annual, default = Annual")
     parser.add_argument("--flow", type=int, default=1, help="1 for import, 2 for export")
     parser.add_argument("--proxy", action="store_true", help="Use proxy")
+
     args = parser.parse_args()
     monthly = args.month
     proxy = args.proxy
     flow = args.flow
-    flow = [str(flow)]
+    COMTRADE_DATASET = os.path.join(os.getcwd(), "Data", f"complete_data_{flow}.pkl")
+    SEEN_PARAMS = os.path.join(os.getcwd(), "Data", f"seen_params_{flow}.pkl")
 
     if monthly:
         save_path = MONTHLY_DATA_PATH
@@ -631,4 +654,4 @@ if __name__ == "__main__":
         save_path = ANNUAL_DATA_PATH
         frequency = "A"
     # load_countries_codes()
-    build_dataset(flow=flow, use_proxy=proxy)
+    build_dataset(flow=[str(flow)], use_proxy=proxy)
