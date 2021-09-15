@@ -15,11 +15,21 @@ import cartopy.feature as cfeature
 import urllib.request as req
 from bs4 import BeautifulSoup as bs
 import pickle as pkl
+import tensorflow as tf
+
 
 YEARS_FOLDER = "C:\\Users\\claud\\OneDrive\\Documents\\PROJECTS\\Master-Thesis"
 COUNTRIES_CODES_PATH = os.path.join(os.getcwd(), "Comtrade", "Reference Table",
                                     "Comtrade Country Code and ISO list.xls")
 
+
+def edgelist_to_sparse_tensor(file_name):
+    with open(f"./Data/{file_name}.pkl", "rb") as file:
+        data = pkl.load(file)
+    batch_size = 5000
+    for i in range(len(data)//batch_size):
+
+        st = tf.sparse.SparseTensor()
 
 def get_iso2_long_lat():
     if not os.path.exists("./Data/iso2_long_lat.pkl"):

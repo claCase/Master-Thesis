@@ -19,7 +19,7 @@ import tqdm
 
 
 # cpi.update()
-os.chdir("../")
+# os.chdir("../")
 
 COUNTRIES_CODES_PATH = os.path.join(os.getcwd(), "Comtrade", "Reference Table",
                                     "Comtrade Country Code and ISO list.xls")
@@ -40,6 +40,8 @@ COMTRADE_DATASET = os.path.join(os.getcwd(), "Data", "complete_data.pkl")
 SEEN_PARAMS = os.path.join(os.getcwd(), "Data", "seen_params.pkl")
 YEARS_AVAILABILITY = os.path.join(os.getcwd(), "Data", "years_availability.pkl")
 PARAMS_LIST = os.path.join(os.getcwd(), "Data", "params_list.pkl")
+COW_ISO3 = os.path.join(os.getcwd(), "Data", "cow2iso3.csv")
+COW_CC = os.path.join(os.getcwd(), "Data", "cow2iso3.txt")
 
 
 def load_countries_codes():
@@ -150,6 +152,25 @@ def codes_conversion_dict(code1: str, code2: str, precision=2, conversion_table=
     keys = freq_conversion[codes_precision[0]]
     values = freq_conversion[codes_precision[1]]
     return {k: v for k, v in zip(keys, values)}
+
+
+def cow_iso3_to_country_codes(save=True):
+    if not os.path.exists(COW_CC):
+        mapping = {}
+        with open(COW_ISO3, "r") as file:
+            lines = file.splitlines()
+            for line in lines:
+                split = line.split(" ")
+                idx = split[0]
+                name = split[1]
+                iso3 = split[2]
+                iso2 = split[3]
+                cwcode = split[4]
+
+    else:
+        with open(COW_CC, "rb") as file:
+            mapping = pkl.load(file)
+    return mapping
 
 
 def get_data(country1: [str], country2: [str], commodity: [str], flow=(1,), frequency: str = "A",
@@ -282,6 +303,7 @@ def scrape_proxy():
         else:
             list3_dict.append({"http": ip_port})
     list1.extend(list3_dict)
+
     list1.extend(list2)
     return list1
 
@@ -435,7 +457,8 @@ def select_most_avail_countries(quantile=0.5):
             print(c, len(y), df[df["Country Code"] == int(c)]["Country Name, Full "].values[0])
 
 
-def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy: eventlet.Queue = None, proxy=None, save_path=COMTRADE_DATASET):
+def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy: eventlet.Queue = None, proxy=None,
+              save_path=COMTRADE_DATASET):
     error = False
     if gt is not None:
         data = gt.wait()
@@ -564,7 +587,9 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
 
     time_to_check = time.time()
     time_to_check_proxy = time.time()
+
     save_path = COMTRADE_DATASET
+
     while not q.empty():
         if os.path.getsize(save_path) > 60e6:
             i = 0
@@ -627,11 +652,26 @@ def join_pickles(file_name_match, folder):
         for file in files:
             if re.match(file_name_match, file):
                 print(f"filename: {file}")
-                with open(os.path.join(folder,file), "rb") as f:
+                with open(os.path.join(folder, file), "rb") as f:
                     d = pkl.load(f)
                     data.extend(d)
     with open(os.path.join(folder, file_name_match + "_joined_complete.pkl"), "wb") as f:
         pkl.dump(data, f)
+
+
+def products_to_idx(reporting_code="SITC1"):
+    conversion_table = pd.read_excel(CODES_CONVERSION_PATH, index_col=None,
+                                     converters={0: str, 1: str, 2: str, 3: str, 4: str, 5: str, 6: str, 7: str,
+                                                 8: str, 9: str, 10: str})
+    s1 = list(set(conversion_table[reporting_code].dropna().astype(str).str[:2].to_list()))
+    idx = np.arange(len(s1))
+    mapping = {}
+    for i, j in zip(s1, idx):
+        mapping[i] = j
+
+    with open(f"./Data/{reporting_code}_to_idx.pkl", "wb") as file:
+        pkl.dump(mapping, file)
+    return mapping
 
 
 if __name__ == "__main__":
