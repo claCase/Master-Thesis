@@ -147,9 +147,18 @@ class TrippletDecoder(l.Layer):
 
 
 class NTN(l.Layer):
-    def __init__(self, embedding_size, activation="tanh", **kwargs):
+    """
+    Implementation of Reasoning With Neural Tensor Networks for Knowledge Base Completion
+    https://proceedings.neurips.cc/paper/2013/file/b337e84de8752b27eda3a12363109e80-Paper.pdf
+    """
+
+    def __init__(self, activation="tanh", k=5, **kwargs):
+        """
+        Parameters:
+            activation: type of activation to be used
+            k: number of kernels for each type of relation
+        """
         super(NTN, self).__init__(**kwargs)
-        self.embedding_size = embedding_size
         self.activation = activation
         if self.activation == "relu":
             self.activation = activations.relu
@@ -157,17 +166,23 @@ class NTN(l.Layer):
             self.activation = activations.tanh
         if self.activation == "sigmoid":
             self.activation = activations.sigmoid
+        self.k = k
 
     def build(self, input_shape):
         X_shape, A_shape = input_shape
         self.initializer = initializers.GlorotNormal()
-        self.W = []
-        self.V1 = tf.Variable(self.initializer(shape=(A_shape[0], X_shape[-1])))
-        self.V2 = tf.Variable(self.initializer(shape=(A_shape[0], X_shape[-1])))
-        self.u = tf.Variable(self.initializer(shape=(A_shape[0], 1)))
-        self.b = tf.Variable(self.initializer(shape=(A_shape[0], 1)))
+        # Relation Specific Parameters
+        self.Wr = []
+        self.ur = []
+        self.br = []
+        self.V1r = []
+        self.V2r = []
         for _ in range(A_shape[0]):
-            self.W.append(tf.Variable(self.initializer(shape=(X_shape[-1], X_shape[-1]))))
+            self.V1r.append(tf.Variable(self.initializer(shape=(X_shape[-1], self.k))))
+            self.V2r.append(tf.Variable(self.initializer(shape=(X_shape[-1], self.k))))
+            self.ur.append(tf.Variable(self.initializer(shape=(self.k, 1))))
+            self.br.append(tf.Variable(self.initializer(shape=(self.k,))))
+            self.Wr.append(tf.Variable(self.initializer(shape=(X_shape[-1], X_shape[-1], self.k))))
 
     def call(self, inputs, **kwargs):
         X, A = inputs
@@ -176,15 +191,19 @@ class NTN(l.Layer):
     def ntn(self, X, A: tf.sparse.SparseTensor):
         e1 = tf.gather(X, A.indices[:, 1])
         e2 = tf.gather(X, A.indices[:, 2])
-        wr = tf.gather(self.W, A.indices[:, 0])
-        f = tf.einsum("ij,njj->inj", e1, wr)
-        bilinear = tf.einsum("inj,ij->n", f, e2)
-        v1 = tf.matmul(self.V1, tf.transpose(e1))
-        v2 = tf.matmul(self.V2, tf.transpose(e2))
-        vt = v1 + v2
-        x = self.activation(bilinear + vt + self.b)
-        activated = tf.matmul(x, self.u)
-        return activated
+        wr = tf.gather(self.Wr, A.indices[:, 0])
+        ur = tf.gather(self.ur, A.indices[:, 0])
+        br = tf.gather(self.br, A.indices[:, 0])
+        v1 = tf.gather(self.V1r, A.indices[:, 0])
+        v2 = tf.gather(self.V2r, A.indices[:, 0])
+        bilinear = tf.einsum("ni,nijk->njk", e1, wr)
+        bilinear = tf.einsum("njk,ij->nk", bilinear, e2)
+        v1 = tf.einsum("nd,ndk->nk", e1, v1)  # nxd, nxdxk -> nxk
+        v2 = tf.einsum("nd,ndk->nk", e2, v2)  # nxd, nxdxk -> nxk
+        vt = v1 + v2  # nxk+nxk -> nxk
+        activated = self.activation(bilinear + vt + br)  # nxk
+        score = tf.einsum("nk,nkj->nj", activated, ur)  # nxk,nxkx1 -> nx1
+        return score
 
 
 class RGHAT(l.Layer):
@@ -196,21 +215,34 @@ class RGHAT(l.Layer):
     def __init__(self,
                  nodes_features_dim,
                  relations_features_dim,
+                 heads=5,
                  embedding_combination="additive",
                  dropout_rate=None,
                  attention_activation="relu",
                  include_adj_values=False,
+                 message_activation=None,
                  **kwargs
                  ):
         super(RGHAT, self).__init__(**kwargs)
         self.nodes_features_dim = nodes_features_dim
         self.relations_features_dim = relations_features_dim
+        self.heads = heads
         self.embedding_combination = embedding_combination
         assert self.embedding_combination in ["additive", "multiplicative", "bi-interaction"]
         self.dropout_rate = dropout_rate
         self.attention_activation = attention_activation
         self.initializer = initializers.GlorotNormal()
         self.include_adj_values = include_adj_values
+        self.message_activation = message_activation
+        assert self.message_activation in ["relu", "sigmoid", "tanh", "leaky_relu", None]
+        if self.message_activation == "relu":
+            self.message_activation = activations.relu
+        elif self.message_activation == "sigmoid":
+            self.message_activation = activations.sigmoid
+        elif self.message_activation == "leaky_relu":
+            self.message_activation = l.LeakyReLU(0.2)
+        elif self.message_activation == "tanh":
+            self.message_activation = activations.tanh
 
     def build(self, input_shape):
         """
@@ -220,6 +252,8 @@ class RGHAT(l.Layer):
                              the relations features matrix and A is the adjacency tensor of size RxNxN
         """
         X_shape, R_shape, A_shape = input_shape
+
+        #for _ in range(self.heads):
         self.s_m_kernel = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], self.nodes_features_dim)),
                                       dtype=tf.float32)
         self.t_m_kernel = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], self.nodes_features_dim)),
@@ -245,23 +279,25 @@ class RGHAT(l.Layer):
             Parameters:
                 X: Nodes features matrix of dimensions Nxf where N is the number of nodes and f is the feature dimension
         """
-        return tf.matmul(X, self.s_m_kernel)
+        f = tf.matmul(X, self.s_m_kernel)
+        if self.message_activation is None:
+            return f
+        else:
+            return self.message_activation(f)
 
     def target_message(self, X):
-        """
-        Linear transformation of targets to make them messages
-            Parameters:
-                X: Nodes features matrix of dimensions Nxf where N is the number of nodes and f is the feature dimension
-        """
-        return tf.matmul(X, self.t_m_kernel)
+        f = tf.matmul(X, self.t_m_kernel)
+        if self.message_activation is None:
+            return f
+        else:
+            return self.message_activation(f)
 
     def relation_message(self, R):
-        """
-        Linear transformation of relations to make them messages
-            Parameters:
-                R: Relations features matrix of dimensions Rxf where R is the number of relations and f is the feature dimension
-        """
-        return tf.matmul(R, self.r_m_kernel)
+        f = tf.matmul(R, self.r_m_kernel)
+        if self.message_activation is None:
+            return f
+        else:
+            return self.message_activation(f)
 
     def additive(self, embeddings, update_embeddings):
         """
@@ -355,6 +391,10 @@ class RGHAT(l.Layer):
 
 
 class CrossAggregation(l.Layer):
+    """
+    Implementation of Cross Aggregation from Deep & Cross Network for Ad Click Predictions: https://arxiv.org/pdf/1708.05123
+    """
+
     def __init__(self, output_dim=None, dropout_rate=0.5, **kwargs):
         super(CrossAggregation, self).__init__(**kwargs)
         self.initializer = initializers.GlorotNormal()
@@ -381,8 +421,30 @@ class CrossAggregation(l.Layer):
         return update_embeddings
 
 
+class GAIN(l.Layer):
+    """
+    Implementation of GAIN: Graph Attention & Interaction Network for Inductive Semi-Supervised Learning over
+    Large-scale Graphs
+    https://arxiv.org/abs/2011.01393
+    """
+
+    def __init__(self, aggregators_list, output_dim, **kwargs):
+        super(GAIN, self).__init__(**kwargs)
+        self.aggregators_list = aggregators_list
+        self.output_dim = output_dim
+        self.initializer = initializers.GlorotNormal()
+
+    def build(self, input_shape):
+        X_shape, R_shape, A_shape = input_shape
+        self.aggregator_kernel_self = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], 1)))
+        self.aggregator_kernel2_aggregator = None
+
+
 class GAT(l.Layer):
     def __init__(self, **kwargs):
+        """
+        Implementation of Graph Atttention Networks: https://arxiv.org/pdf/2102.07200.pdf
+        """
         super(GAT, self).__init__(**kwargs)
         self.initializer = initializers.GlorotNormal()
 
@@ -403,7 +465,12 @@ class GAT(l.Layer):
         update_embeddings = tf.math.unsorted_segment_sum(attended_embeddings, edgelist[:, 1])
         return update_embeddings
 
+
 class GCN(l.Layer):
+    """
+    Implementation of Graph Convolutional Neural Netwroks: https://arxiv.org/pdf/1609.02907.pdf
+    """
+
     def __init__(self, hidden_dim, output_dim, dropout_rate, **kwargs):
         super(GCN, self).__init__(**kwargs)
         self.initializer = initializers.GlorotNormal()
@@ -422,7 +489,7 @@ class GCN(l.Layer):
         D_inv_sqrt = self.inverse_degree(A_aug)
         A_norm = tf.matmul(D_inv_sqrt, A_aug)
         A_norm = tf.matmul(A_norm, D_inv_sqrt)
-        t1 = tf.matmul(A_norm,X)
+        t1 = tf.matmul(A_norm, X)
         t2 = tf.matmul(t1, self.W1)
         t3 = activations.relu(t2)
         if self.dropout_rate:
@@ -437,7 +504,7 @@ class GCN(l.Layer):
 
     def inverse_degree(self, A):
         D = tf.math.reduce_sum(A, axis=-1)
-        D_inv_sq = tf.math.sqrt(1/D)
+        D_inv_sq = tf.math.sqrt(1 / D)
         D_inv_sq = tf.linalg.diag([D_inv_sq])[0]
         return D_inv_sq
 
@@ -450,6 +517,14 @@ class RelationalAwareAttention(l.Layer):
 class GRAMME(l.Layer):
     def __init__(self, **kwargs):
         super(GRAMME, self).__init__(**kwargs)
+
+
+class OrbitModel(l.Layer):
+    """
+    Implementation of From One Point to A Manifold: Orbit Models for Precise and Efficient Knowledge Graph Embedding
+    https://arxiv.org/pdf/1512.04792v2.pdf
+    """
+    pass
 
 
 def unsorted_segment_softmax(x, indices, n_nodes=None):
