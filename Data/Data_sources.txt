@@ -1,0 +1,4 @@
+https://ucdp.uu.se/downloads/index.html#onesided - ucdp-onesided-211.csv (one sided conflict)
+https://ucdp.uu.se/downloads/index.html#armedconflict - ucdp-prio-acd-211 (two sided conflict)
+http://faculty.haas.berkeley.edu/arose/GATTdataStata.zip - data4web.csv 
+https://comtrade.un.org/data - complete_data.pkl
