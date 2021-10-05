@@ -36,7 +36,7 @@ DATA_AVAILABILITY_PATH = os.path.join(os.getcwd(), "Data", "data_availability.pk
 COMTRADE_URL = 'https://comtrade.un.org/api/get?'
 MONTHLY_DATA_PATH = os.path.join(os.getcwd(), "Data", "Monthly Data")
 ANNUAL_DATA_PATH = os.path.join(os.getcwd(), "Data", "Annual Data")
-COMTRADE_DATASET = os.path.join(os.getcwd(), "Data", "complete_data.pkl")
+COMTRADE_DATASET = os.path.join(os.getcwd(), "Data")
 SEEN_PARAMS = os.path.join(os.getcwd(), "Data", "seen_params.pkl")
 YEARS_AVAILABILITY = os.path.join(os.getcwd(), "Data", "years_availability.pkl")
 PARAMS_LIST = os.path.join(os.getcwd(), "Data", "params_list.pkl")
@@ -458,7 +458,7 @@ def select_most_avail_countries(quantile=0.5):
 
 
 def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy: eventlet.Queue = None, proxy=None,
-              save_path=COMTRADE_DATASET):
+              save_path=os.path.join(COMTRADE_DATASET, "complete_data.pkl")):
     error = False
     if gt is not None:
         data = gt.wait()
@@ -497,13 +497,13 @@ def link_func(gt, edge_list, param_idx, q, seen: set, data=None, q_proxy: eventl
         pass
 
 
-def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=True):
+def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=True, file_name="complete_data"):
     if not os.path.exists(PARAMS_LIST):
         if os.path.exists(DATA_AVAILABILITY_PATH):
             with open(DATA_AVAILABILITY_PATH, "rb") as file:
                 availability = pkl.load(file)
         else:
-            # check_years_data_availability()
+            availability = check_years_data_availability()
             raise Exception(f"No country data availability in {DATA_AVAILABILITY_PATH}")
 
         if os.path.exists(YEARS_AVAILABILITY):
@@ -569,10 +569,10 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
         seen = set()
         params_idx = np.arange(0, len(params))
 
-    if not os.path.exists(COMTRADE_DATASET):
-        open(COMTRADE_DATASET, 'a').close()
-    if os.path.getsize(COMTRADE_DATASET) > 0:
-        with open(COMTRADE_DATASET, "rb") as file:
+    if not os.path.exists(os.path.join(COMTRADE_DATASET, file_name + f"_{flow}.pkl")):
+        open(os.path.join(COMTRADE_DATASET, file_name + f"_{flow}.pkl"), 'a').close()
+    if os.path.getsize(os.path.join(COMTRADE_DATASET, file_name + f"_{flow}.pkl")) > 0:
+        with open(os.path.join(COMTRADE_DATASET, file_name + f"_{flow}.pkl"), "rb") as file:
             edge_list = pkl.load(file)
     else:
         edge_list = []
@@ -588,7 +588,7 @@ def build_dataset(flow=("1",), frequency="A", reporting_code="SITC1", use_proxy=
     time_to_check = time.time()
     time_to_check_proxy = time.time()
 
-    save_path = COMTRADE_DATASET
+    save_path = os.path.join(COMTRADE_DATASET, file_name + f"_{flow}.pkl")
 
     while not q.empty():
         if os.path.getsize(save_path) > 60e6:
@@ -660,18 +660,204 @@ def join_pickles(file_name_match, folder):
 
 
 def products_to_idx(reporting_code="SITC1"):
-    conversion_table = pd.read_excel(CODES_CONVERSION_PATH, index_col=None,
-                                     converters={0: str, 1: str, 2: str, 3: str, 4: str, 5: str, 6: str, 7: str,
-                                                 8: str, 9: str, 10: str})
-    s1 = list(set(conversion_table[reporting_code].dropna().astype(str).str[:2].to_list()))
-    idx = np.arange(len(s1))
-    mapping = {}
-    for i, j in zip(s1, idx):
-        mapping[i] = j
+    if not os.path.exists(f"./Data/{reporting_code}_to_idx.pkl"):
+        conversion_table = pd.read_excel(CODES_CONVERSION_PATH, index_col=None,
+                                         converters={0: str, 1: str, 2: str, 3: str, 4: str, 5: str, 6: str, 7: str,
+                                                     8: str, 9: str, 10: str})
+        s1 = list(set(conversion_table[reporting_code].dropna().astype(str).str[:2].to_list()))
+        idx = np.arange(len(s1))
+        mapping = {}
+        for i, j in zip(s1, idx):
+            mapping[i] = j
 
-    with open(f"./Data/{reporting_code}_to_idx.pkl", "wb") as file:
-        pkl.dump(mapping, file)
+        with open(f"./Data/{reporting_code}_to_idx.pkl", "wb") as file:
+            pkl.dump(mapping, file)
+    else:
+        with open(f"./Data/{reporting_code}_to_idx.pkl", "rb") as file:
+            mapping = pkl.load(file)
     return mapping
+
+
+def countries_to_idx():
+    if not os.path.exists(os.path.join(COMTRADE_DATASET, "countries_to_idx.pkl")):
+        countries = get_countries_codes_from_comtrade()
+        codes = countries["Country Code"].astype(str).to_numpy().flatten()
+        idx = np.arange(len(codes))
+        conversion = {}
+        for i, j in zip(codes, idx):
+            conversion[i] = j
+        with open(os.path.join(COMTRADE_DATASET, "countries_to_idx.pkl"), "wb") as file:
+            pkl.dump(conversion, file)
+    else:
+        with open(os.path.join(COMTRADE_DATASET, "countries_to_idx.pkl"), "rb") as file:
+            conversion = pkl.load(file)
+    return conversion
+
+
+def data_product_to_idx(data, dict, data_path=None, conversion_dict_path=None):
+    if data_path is not None:
+        with open(data_path, "rb") as file:
+            data = pkl.load(file)
+    else:
+        assert data is not None
+        data = data
+    if conversion_dict_path is not None:
+        with open(conversion_dict_path, "rb") as file:
+            idx_conversion = pkl.load(file)
+    else:
+        idx_conversion = dict
+    no_edge = []
+    for i, edge in enumerate(data):
+        try:
+            data[i] = (*edge[:-2], idx_conversion[edge[-2]], edge[-1])
+        except:
+            print(f"No key for {edge[-2]}")
+            no_edge.append((i, edge[-2]))
+    for i, e in enumerate(no_edge):
+        data.pop(i)
+    return data
+
+
+def idx_to_data_product(data=None, reporting_code="SITC1"):
+    if os.path.exists(os.path.join(COMTRADE_DATASET, f"idx_to_prod_{reporting_code}.pkl")):
+        with open(os.path.join(COMTRADE_DATASET, f"idx_to_prod_{reporting_code}.pkl"), "rb") as file:
+            idx_to_prod = pkl.load(file)
+    else:
+        prod_to_idx = products_to_idx(reporting_code)
+        idx_to_prod = {}
+        for k in prod_to_idx.keys():
+            idx_to_prod[prod_to_idx[k]] = k
+        with open(os.path.join(COMTRADE_DATASET, f"idx_to_prod_{reporting_code}.pkl"), "wb") as file:
+            pkl.dump(idx_to_prod, file)
+    idxs = []
+    if data is not None:
+        for i in data:
+            idxs.append(idx_to_prod[i])
+        return idxs
+
+
+def data_countries_to_idx(data, dict, data_path=None, conversion_dict_path=None):
+    if data_path is not None:
+        with open(data_path, "rb") as file:
+            data = pkl.load(file)
+    else:
+        data = data
+
+    if conversion_dict_path is not None:
+        with open(conversion_dict_path, "rb") as file:
+            idx_conversion = pkl.load(file)
+    else:
+        idx_conversion = dict
+
+    no_key = []
+    counter = tqdm.tqdm(total=len(data), desc="Converting countries codes")
+    for i, e in enumerate(data):
+        try:
+            c1 = idx_conversion[e[1]]
+            c2 = idx_conversion[e[2]]
+            data[i] = (e[0], c1, c2, *e[3:])
+        except:
+            print(f"no key for {e}")
+            no_key.append(i)
+        counter.update(1)
+
+    for i in no_key:
+        data.pop(i)
+    return data
+
+
+def idx_to_countries(data=None):
+    if os.path.exists(os.path.join(COMTRADE_DATASET, "idx_to_countries.pkl")):
+        with open(os.path.join(COMTRADE_DATASET, "idx_to_countries.pkl"), "rb") as file:
+            idx_to_country = pkl.load(file)
+    else:
+        country_to_idx = countries_to_idx()
+        idx_to_country = {}
+        for k in country_to_idx.keys():
+            idx_to_country[country_to_idx[k]] = k
+            with open(os.path.join(COMTRADE_DATASET, "idx_to_countries.pkl"), "wb") as file:
+                pkl.dump(idx_to_country, file)
+    converted = []
+    if data is not None:
+        for i in data:
+            converted.append(idx_to_country[i])
+        return converted
+
+
+def filter_not_in_countries_codes(data, file_name=None):
+    print("Filtering world partners codes")
+    not_in_cc = []
+    countries_codes = countries_to_idx().keys()
+    counter = tqdm.tqdm(total=len(data), desc="Getting world edges")
+    for i, e in enumerate(data):
+        if str(e[2]) not in countries_codes:
+            not_in_cc.append(i)
+        counter.update(1)
+
+    counter = tqdm.tqdm(total=len(not_in_cc), desc="Popping world edges")
+    world_edges = []
+    for i in sorted(not_in_cc, reverse=True):
+        del data[i]
+        counter.update(1)
+
+    if file_name:
+        with open(os.path.join(COMTRADE_DATASET, file_name), "wb") as file:
+            pkl.dump(data, file)
+    return data, world_edges
+
+
+def data_to_idx(data, countries_conversion_dict=None, product_conversion_dict=None, filename=None):
+    if countries_conversion_dict is None:
+        country_dict = countries_to_idx()
+    else:
+        country_dict = countries_conversion_dict
+    if product_conversion_dict is None:
+        product_dict = products_to_idx()
+    else:
+        product_dict = product_conversion_dict
+
+    counter = tqdm.tqdm(total=len(data), desc="Codes to idx conversion")
+    no_key = []
+    for i, e in enumerate(data):
+        if e[2] != 0:
+            try:
+                c1 = country_dict[str(e[1])]
+                c2 = country_dict[str(e[2])]
+                p = product_dict[str(e[3])]
+                data[i] = (e[0], p, c1, c2, e[4])
+            except:
+                no_key.append(i)
+        else:
+            no_key.append(i)
+        counter.update(1)
+
+    for i in no_key:
+        data.pop(i)
+
+    if filename is not None:
+        with open(os.path.join(COMTRADE_DATASET, filename), "wb") as file:
+            pkl.dump(data, file)
+    return data
+
+
+def check_and_eliminate_duplicate(data):
+    duplicate = {}
+    t = tqdm.tqdm(total=len(data))
+    for i, e in enumerate(data):
+        try:
+            duplicate[str(e[:4])].append(i)
+        except:
+            duplicate[str(e[:4])] = [i]
+        t.update(1)
+
+    duplicate_idx = []
+    for k in duplicate.keys():
+        if len(duplicate[k]) > 1:
+            duplicate_idx.append(duplicate[k][0])
+    del duplicate
+    data_np = np.asarray(data, dtype=np.float32)
+    data_np = np.delete(data_np, duplicate_idx, 0)
+    return data_np
 
 
 if __name__ == "__main__":
