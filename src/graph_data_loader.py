@@ -16,6 +16,7 @@ import urllib.request as req
 from bs4 import BeautifulSoup as bs
 import pickle as pkl
 import tensorflow as tf
+from src.comtrade_data_loader import idx_to_countries, idx_to_product
 
 YEARS_FOLDER = "C:\\Users\\claud\\OneDrive\\Documents\\PROJECTS\\Master-Thesis"
 COUNTRIES_CODES_PATH = os.path.join(os.getcwd(), "Comtrade", "Reference Table",
@@ -30,12 +31,26 @@ def relational_graph_plotter(graph):
         ax[i, 0].imshow(graph[i, :, :], cmap="winter")
     plt.show()
 
-def from_data_sparse_numpy_to_ntx(data_sp):
 
-    df = pd.DataFrame("")
-    G = nx.from_pandas_edgelist(df=df[["ReporterISO3", "PartnerISO3", "TradeValue", "ProductCode2"]],
+def from_data_sparse_to_ntx(data_sp):
+    """
+    Parameters:
+        data_sp: tf.SparseTensor of shape RxNxN
+    """
+    edges = data_sp.indices
+    r = edges[:, 0]
+    i = edges[:, 1]
+    j = edges[:, 2]
+    idx2prod = idx_to_product(r)
+    idx2country_i = idx_to_countries(i)
+    idx2country_j = idx_to_countries(j)
+    data = pd.DataFrame({"ReporterISO3": idx2country_i, "PartnerISO3": idx2country_j, "ProductCode2": idx2prod})
+    G = nx.from_pandas_edgelist(df=data[["ReporterISO3", "PartnerISO3", "TradeValue", "ProductCode2"]],
                                 source="ReporterISO3", target="PartnerISO3", edge_attr=["TradeValue"],
                                 edge_key="ProductCode2", create_using=nx.MultiDiGraph())
+    return G
+
+
 def get_iso2_long_lat():
     if not os.path.exists("./Data/iso2_long_lat.pkl"):
         print("loading from website")
@@ -195,26 +210,3 @@ def draw_subgraph(G: nx.MultiDiGraph, prod_keys: [str], nodes: [str] = None, log
     ax.stock_img()
     ax.add_feature(cfeature.BORDERS, alpha=.5, linestyle=":")
     ax.add_feature(cfeature.COASTLINE, alpha=.5)
-
-
-def add_self_loops(data_sp: tf.sparse.SparseTensor):
-    n_nodes = data_sp.shape[-1]
-    years = data_sp.shape[0]
-    r = data_sp.shape[1]
-    self_edges = []
-    self_values = []
-    for t in range(years):
-        data_t_dense = tf.sparse.to_dense(tf.sparse.slice(data_sp, (t, 0, 0, 0), (1, r, n_nodes, n_nodes)))[0]
-        deg_out = tf.reduce_sum(data_t_dense, axis=2)
-        deg_sparse = tf.sparse.from_dense(deg_out)
-        self_edges_t = np.asarray(deg_sparse.indices)
-        idx = self_edges_t[:, -1]
-        self_edges_t = np.concatenate(
-            [np.ones(len(idx), dtype=np.int64)[:, np.newaxis] * t, self_edges_t, idx[:, np.newaxis]], axis=1)
-        self_values_t = deg_sparse.values
-        self_edges.extend(self_edges_t.tolist())
-        self_values.extend(self_values_t)
-    self_data_sp = tf.sparse.SparseTensor(self_edges, self_values, data_sp.shape)
-    data_sp = tf.sparse.concat(0, [data_sp, self_data_sp])
-    data_sp = tf.sparse.reorder(data_sp)
-    return data_sp
