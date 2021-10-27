@@ -1,4 +1,6 @@
 import numpy as np
+import scipy
+import networkx as ntx
 import tensorflow as tf
 from tensorflow.keras import layers as l
 from tensorflow.keras import activations
@@ -6,6 +8,10 @@ from tensorflow.keras import initializers
 import tensorflow.keras.backend as k
 from src.modules.graph_utils import make_data
 from tensorflow.keras.losses import mean_squared_error, sparse_categorical_crossentropy
+from scipy.sparse.csgraph import laplacian
+import scipy.sparse.linalg
+from networkx.linalg import directed_laplacian_matrix
+from src.modules.graph_utils import add_self_loop
 
 
 # physical_devices = tf.config.list_physical_devices('GPU')
@@ -14,7 +20,7 @@ from tensorflow.keras.losses import mean_squared_error, sparse_categorical_cross
 
 
 class BilinearLayer(l.Layer):
-    """"
+    """ "
     Implementation of Bilinear Layer:
     formula for single vector -> bilinear_r(e1, e2) = e^t*R_r*e where e:R^f and R_r: R^(fxf)
     formula for matrix -> ExRxE^T where E:R^(Nxf) and R: R^(fxf)
@@ -35,7 +41,12 @@ class BilinearLayer(l.Layer):
             # for each relation add trainable weight matrix of size fxf
             for i in range(self.relations):
                 self.Bs.append(
-                    self.add_weight(shape=(self.features, self.features), trainable=True, name=f"Relation{i}"))
+                    self.add_weight(
+                        shape=(self.features, self.features),
+                        trainable=True,
+                        name=f"Relation{i}",
+                    )
+                )
 
     def call(self, inputs, *args, **kwargs):
         result = []
@@ -61,101 +72,174 @@ class BilinearLayer(l.Layer):
 
 
 class Bilinear(l.Layer):
-    def __init__(self, hidden_dim=5, **kwargs):
+    def __init__(self, hidden_dim=5, activation=None, **kwargs):
         super(Bilinear, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
+        self.activation = activation
         self.initializer = initializers.GlorotNormal()
 
     def build(self, input_shape):
-        print("Building model")
-        self.R = tf.Variable(initial_value=self.initializer(shape=(self.hidden_dim, self.hidden_dim)))
-        self.X = tf.Variable(initial_value=self.initializer(shape=(input_shape[0], self.hidden_dim)))
+        self.R = tf.Variable(
+            initial_value=self.initializer(shape=(self.hidden_dim, self.hidden_dim))
+        )
+        self.X = tf.Variable(
+            initial_value=self.initializer(shape=(input_shape[0], self.hidden_dim))
+        )
 
     def call(self, inputs, **kwargs):
         x_left = tf.matmul(self.X, self.R)
         A = tf.matmul(x_left, x_left, transpose_b=True)
-        return A
+        if self.activation is not None:
+            A = activations.get(self.activation)(A)
+        return self.X, A
 
 
 class BilinearSparse(l.Layer):
-    def __init__(self, hidden_dim, **kwargs):
+    def __init__(self, hidden_dim, activation="relu", **kwargs):
         super(BilinearSparse, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
         self.initializer = initializers.GlorotNormal()
+        self.activation = activation
 
     def build(self, input_shape):
-        self.X = tf.Variable(initial_value=self.initializer(shape=(input_shape[0], self.hidden_dim)))
-        self.R = tf.Variable(initial_value=self.initializer(shape=(self.hidden_dim, self.hidden_dim)))
+        self.X = tf.Variable(
+            initial_value=self.initializer(shape=(input_shape[0], self.hidden_dim))
+        )
+        self.R = tf.Variable(
+            initial_value=self.initializer(shape=(self.hidden_dim, self.hidden_dim))
+        )
+        # self.X1 = tf.Variable(initial_value=self.initializer(shape=(self.hidden_dim, self.hidden_dim)))
+        # self.X2 = tf.Variable(initial_value=self.initializer(shape=(self.hidden_dim, self.hidden_dim)))
 
     def call(self, inputs, **kwargs):
         edgelist, values = inputs.indices, inputs.values
+        # x1 = tf.matmul(self.X, self.X1)
+        # x2 = tf.matmul(self.X, self.X2)
         e1 = tf.gather(self.X, edgelist[:, 0])
         e2 = tf.gather(self.X, edgelist[:, 1])
-        left = tf.matmul(e1, self.R)  # ei,ii->ei
-        right = tf.multiply(left, e2)
-        right = tf.reduce_sum(right, 1)
-        # right = tf.einsum("ei,ei->e", left, e2)
+        left = tf.einsum("ij,jk->ik", e1, self.R)
+        right = tf.einsum("ij,ij->i", left, e2)
+        if self.activation:
+            right = activations.get(self.activation)(right)
         A = tf.sparse.SparseTensor(edgelist, right, inputs.shape)
-        return A
+        return self.X, A
 
 
 class BilinearDecoderDense(l.Layer):
-    def __init__(self, **kwargs):
+    def __init__(self, activation="relu", diagonal=False, **kwargs):
         super(BilinearDecoderDense, self).__init__(**kwargs)
         self.initializer = initializers.GlorotNormal()
+        self.activation = activation
+        self.diagonal = diagonal
 
     def build(self, input_shape):
         X_shape, A_shape = input_shape
-        self.R = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], X_shape[-1])), name="R_bilinear")
+        if self.diagonal:
+            self.R = tf.Variable(
+                initial_value=self.initializer(shape=(X_shape[-1])), name="R_bilinear"
+            )
+            self.R = tf.linalg.diag(self.R)
+        else:
+            self.R = tf.Variable(
+                initial_value=self.initializer(shape=(X_shape[-1], X_shape[-1])),
+                name="R_bilinear",
+            )
 
     def call(self, inputs, **kwargs):
         X, A = inputs
         x_left = tf.matmul(X, self.R)
         A = tf.matmul(x_left, X, transpose_b=True)
+        if self.activation is not None:
+            A = activations.get(self.activation)(A)
         return X, A
 
 
 class BilinearDecoderSparse(l.Layer):
-    def __init__(self, activation="relu", **kwargs):
+    def __init__(self, activation="relu", diagonal=False, **kwargs):
         super(BilinearDecoderSparse, self).__init__(**kwargs)
+        self.initializer = initializers.GlorotNormal()
+        self.diagonal = diagonal
+        self.activation = activation
+
+    def build(self, input_shape):
+        X_shape, A_shape = input_shape
+        if self.diagonal:
+            self.R_kernel = tf.Variable(
+                initial_value=self.initializer(shape=(X_shape[-1]))
+            )
+            self.R_kernel = tf.linalg.diag(self.R_kernel)
+        else:
+            self.R_kernel = tf.Variable(
+                initial_value=self.initializer(shape=(X_shape[-1], X_shape[-1]))
+            )
+
+    def call(self, inputs, **kwargs):
+        X, A = inputs
+        i, j = A.indices[:, 0], A.indices[:, 1]
+        """i = tf.range(A.shape[0])
+        j = tf.range(A.shape[1])
+        c = tf.stack(tf.meshgrid(i, j, indexing='ij'), axis=-1)
+        c = tf.reshape(c, (-1, 2)).numpy()
+        i = c[:,0]
+        j = c[:,1]"""
+        e1 = tf.gather(X, i)
+        e2 = tf.gather(X, j)
+        left = tf.einsum("ij,jk->ik", e1, self.R_kernel)
+        right = tf.einsum("ij,ij->i", left, e2)
+        if self.activation:
+            A_pred = activations.get(self.activation)(right)
+        A_pred = tf.sparse.SparseTensor(A.indices, A_pred, A.shape)
+        # A_pred = tf.sparse.reorder(A_pred)
+        # A_pred = tf.sparse.to_dense(A_pred)
+        return X, A_pred
+
+
+class FlatDecoderSparse(l.Layer):
+    def __init__(self, activation="relu", **kwargs):
+        super(FlatDecoderSparse, self).__init__(**kwargs)
         self.initializer = initializers.GlorotNormal()
         self.activation = activation
 
     def build(self, input_shape):
         X_shape, A_shape = input_shape
-        self.R_kernel = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], X_shape[-1])))
+        self.kernel1 = tf.Variable(
+            initial_value=self.initializer(shape=(X_shape[-1], 1))
+        )
+        self.kernel2 = tf.Variable(
+            initial_value=self.initializer(shape=(X_shape[-1], 1))
+        )
 
-    def call(self, inputs, **kwargs):
+    def call(self, inputs, *args, **kwargs):
         X, A = inputs
         i, j = A.indices[:, 0], A.indices[:, 1]
-        '''i = tf.range(A.shape[0])
-        j = tf.range(A.shape[1])
-        c = tf.stack(tf.meshgrid(i, j, indexing='ij'), axis=-1)
-        c = tf.reshape(c, (-1, 2)).numpy()
-        i = c[:,0]
-        j = c[:,1]'''
-        e1 = tf.gather(X, i)
-        e2 = tf.gather(X, j)
-        left = tf.einsum("ij,jj->ij", e1, self.R_kernel)
-        right = tf.einsum("ij,ij->i", left, e2)
-        right = activations.get(self.activation)(right)
-        A_pred = tf.sparse.SparseTensor(A.indices, right, A.shape)
-        #A_pred = tf.sparse.to_dense(A_pred)
-        return [X, A_pred]
+        X1 = tf.matmul(X, self.kernel1)
+        X2 = tf.matmul(X, self.kernel2)
+        e1 = tf.gather(X1, i)
+        e2 = tf.gather(X2, j)
+        score = e1 + e2
+        if self.activation is not None:
+            score = activations.get(self.activation)(score)
+        return X, tf.sparse.reorder(tf.sparse.SparseTensor(A.indices, score, A.shape))
 
 
 class InnerProductDenseDecoder(l.Layer):
-    def __init__(self, **kwargs):
+    def __init__(self, activation=None, **kwargs):
         super(InnerProductDenseDecoder, self).__init__(**kwargs)
+        self.activation = activation
 
     def call(self, inputs, **kwargs):
         X, A = inputs
-        return X, tf.matmul(X, X, transpose_b=True)
+        inner = tf.matmul(X, X, transpose_b=True)
+        if self.activation is not None:
+            inner = activations.get(self.activation)(inner)
+        return X, inner
 
 
 class InnerProductSparseDecoder(l.Layer):
-    def __init__(self, **kwargs):
+    def __init__(self, activation=None, dropout_rate=0.5, **kwargs):
         super(InnerProductSparseDecoder, self).__init__(**kwargs)
+        self.activation = activation
+        self.dropout_rate = dropout_rate
 
     def call(self, inputs, **kwargs):
         X, A = inputs
@@ -163,6 +247,11 @@ class InnerProductSparseDecoder(l.Layer):
         e1 = tf.gather(X, i)
         e2 = tf.gather(X, j)
         inner = tf.einsum("ij,ij->i", e1, e2)
+        if self.dropout_rate:
+            inner = l.Dropout(self.dropout_rate)(inner)
+        if self.activation is not None:
+            inner = activations.get(self.activation)(inner)
+
         A_pred = tf.sparse.SparseTensor(A.indices, inner, A.shape)
         return X, A_pred
 
@@ -205,8 +294,8 @@ def sparse_three_vector_outer(X, R, A: tf.sparse.SparseTensor):
     T = tf.gather(X, A.indices[:, 2])
     R = tf.gather(R, A.indices[:, 0])
 
-    ein1 = tf.einsum('ij,il->ijl', R, S)  # [start_idx:end_idx], S[start_idx:end_idx])
-    ein2 = tf.einsum('ijl,in->ijln', ein1, T)  # T[start_idx:end_idx])
+    ein1 = tf.einsum("ij,il->ijl", R, S)  # [start_idx:end_idx], S[start_idx:end_idx])
+    ein2 = tf.einsum("ijl,in->ijln", ein1, T)  # T[start_idx:end_idx])
     return ein2
 
 
@@ -242,7 +331,9 @@ class TrippletScoreOuter(l.Layer):
         if self.identity_kernel:
             self.kernel = tf.ones(kernel_shape)
         else:
-            self.kernel = tf.Variable(initial_value=self.initializer(shape=kernel_shape))
+            self.kernel = tf.Variable(
+                initial_value=self.initializer(shape=kernel_shape)
+            )
 
     def call(self, inputs, **kwargs):
         return outer_kernel_product(inputs, self.kernel)
@@ -261,27 +352,65 @@ class TrippletDecoderOuterSparse(l.Layer):
 
 
 class TrippletScoreFlatSparse(l.Layer):
-    def __init__(self):
+    def __init__(self, message_dim=0, activation="softplus"):
         super(TrippletScoreFlatSparse, self).__init__()
         self.initializer = initializers.GlorotNormal()
+        self.message_dim = message_dim
+        self.activation = activation
 
     def build(self, input_shape):
         X_shape, R_shape, A_shape = input_shape
-        self.kernel_x1 = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1])))
-        self.kernel_x2 = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1])))
-        self.kernel_r = tf.Variable(initial_value=self.initializer(shape=(R_shape[-1])))
+        if self.message_dim:
+            self.kernel_x1 = tf.Variable(
+                initial_value=self.initializer(shape=(self.message_dim, 1))
+            )
+            self.kernel_x2 = tf.Variable(
+                initial_value=self.initializer(shape=(self.message_dim, 1))
+            )
+            self.kernel_r = tf.Variable(
+                initial_value=self.initializer(shape=(self.message_dim, 1))
+            )
+        else:
+            self.kernel_x1 = tf.Variable(
+                initial_value=self.initializer(shape=(X_shape[-1]))
+            )
+            self.kernel_x2 = tf.Variable(
+                initial_value=self.initializer(shape=(X_shape[-1]))
+            )
+            self.kernel_r = tf.Variable(
+                initial_value=self.initializer(shape=(R_shape[-1]))
+            )
+        if self.message_dim:
+            self.message_s_kernel = tf.Variable(
+                initial_value=self.initializer(shape=(X_shape[-1], self.message_dim))
+            )
+            self.message_t_kernel = tf.Variable(
+                initial_value=self.initializer(shape=(X_shape[-1], self.message_dim))
+            )
+            self.message_r_kernel = tf.Variable(
+                initial_value=self.initializer(shape=(R_shape[-1], self.message_dim))
+            )
 
     def call(self, inputs, **kwargs):
         X, R, A = inputs
-
-        r = tf.gather(R, A.indices[:0])
-        x1 = tf.gather(X, A.indices[:1])
-        x2 = tf.gather(X, A.indices[:2])
+        if self.message_dim:
+            S = tf.matmul(X, self.message_s_kernel)
+            T = tf.matmul(X, self.message_t_kernel)
+            R = tf.matmul(R, self.message_r_kernel)
+        else:
+            T = S = X
+        x1 = tf.gather(S, A.indices[:, 1])
+        x2 = tf.gather(T, A.indices[:, 2])
+        r = tf.gather(R, A.indices[:, 0])
         x1_k = tf.matmul(x1, self.kernel_x1)
         x2_k = tf.matmul(x2, self.kernel_x2)
         r_k = tf.matmul(r, self.kernel_r)
         tot = x1_k + x2_k + r_k
-        return tot
+        tot = tf.squeeze(tot)
+        if self.activation:
+            activations.get(self.activation)(tot)
+        A_pred = tf.sparse.SparseTensor(A.indices, tot, A.shape)
+        return X, R, A_pred
 
 
 class TensorDecompositionLayer(l.Layer):
@@ -294,12 +423,13 @@ class TensorDecompositionLayer(l.Layer):
         A_shape = input_shape
         self.kernels = []
         for i in range(self.k):
-            x = tf.Variable(initial_value=self.initializer(shape=(A_shape[1],)), trainable=True)
-            r = tf.Variable(initial_value=self.initializer(shape=(A_shape[0],)), trainable=True)
-            self.kernels.append(
-                {"x": x,
-                 "r": r}
+            x = tf.Variable(
+                initial_value=self.initializer(shape=(A_shape[1],)), trainable=True
             )
+            r = tf.Variable(
+                initial_value=self.initializer(shape=(A_shape[0],)), trainable=True
+            )
+            self.kernels.append({"x": x, "r": r})
 
     def call(self, inputs, **kwargs):
         modes = []
@@ -321,44 +451,34 @@ class NTN(l.Layer):
     https://proceedings.neurips.cc/paper/2013/file/b337e84de8752b27eda3a12363109e80-Paper.pdf
     """
 
-    def __init__(self, activation="tanh", k=5, **kwargs):
+    def __init__(self, activation="tanh", output_activation=None, k=5, **kwargs):
         """
         Parameters:
             activation: type of activation to be used
             k: number of kernels for each type of relation
         """
-        super(NTN, self).__init__(**kwargs)
-        self.activation = activation
-        if self.activation == "relu":
-            self.activation = activations.relu
-        if self.activation == "tanh":
-            self.activation = activations.tanh
-        if self.activation == "sigmoid":
-            self.activation = activations.sigmoid
+        super(NTN, self).__init__()
+        self.activation = activations.get(activation)
+        self.output_activation = activations.get(output_activation)
         self.k = k
 
     def build(self, input_shape):
-        print("Building NTN")
         X_shape, A_shape = input_shape
         self.initializer = initializers.GlorotNormal()
         # Relation Specific Parameters
-        self.Wr = []
-        self.ur = []
-        self.br = []
-        self.V1r = []
-        self.V2r = []
+        r = A_shape[0]
         for _ in range(A_shape[0]):
-            self.V1r.append(tf.Variable(self.initializer(shape=(X_shape[-1], self.k))))
-            self.V2r.append(tf.Variable(self.initializer(shape=(X_shape[-1], self.k))))
-            self.ur.append(tf.Variable(self.initializer(shape=(self.k, 1))))
-            self.br.append(tf.Variable(self.initializer(shape=(self.k,))))
-            self.Wr.append(tf.Variable(self.initializer(shape=(X_shape[-1], X_shape[-1], self.k))))
+            self.V1r = tf.Variable(initial_value=self.initializer(shape=(r, X_shape[-1], self.k)))
+            self.V2r = tf.Variable(initial_value=self.initializer(shape=(r, X_shape[-1], self.k)))
+            self.ur = tf.Variable(initial_value=self.initializer(shape=(r, self.k, 1)))
+            self.br = tf.Variable(initial_value=self.initializer(shape=(r, self.k,)))
+            self.Wr = tf.Variable(initial_value=self.initializer(shape=(r, X_shape[-1], X_shape[-1], self.k)))
 
     def call(self, inputs, **kwargs):
         X, A = inputs
         return self.ntn(X, A)
 
-    def ntn(self, X, A: tf.sparse.SparseTensor):
+    '''def ntn(self, X, A: tf.sparse.SparseTensor):
         e1 = tf.gather(X, A.indices[:, 1])
         e2 = tf.gather(X, A.indices[:, 2])
         # Relational specific parameters
@@ -368,7 +488,7 @@ class NTN(l.Layer):
         v1 = tf.gather(self.V1r, A.indices[:, 0])
         v2 = tf.gather(self.V2r, A.indices[:, 0])
         bilinear = tf.einsum("ni,nijk->njk", e1, wr)
-        bilinear = tf.einsum("njk,ij->nk", bilinear, e2)
+        bilinear = tf.einsum("njk,nj->nk", bilinear, e2)
         v1 = tf.einsum("nd,ndk->nk", e1, v1)  # nxd, nxdxk -> nxk
         v2 = tf.einsum("nd,ndk->nk", e2, v2)  # nxd, nxdxk -> nxk
         vt = v1 + v2  # nxk+nxk -> nxk
@@ -376,7 +496,33 @@ class NTN(l.Layer):
         score = tf.einsum("nk,nkj->nj", activated, ur)  # nxk,nxkx1 -> nx1
         score = tf.squeeze(score)
         A_score = tf.sparse.SparseTensor(A.indices, score, A.shape)
-        return X, A_score
+        return X, A_score'''
+    def ntn(self, X, A):
+        a_pred = tf.sparse.from_dense(tf.zeros(shape=A.shape))
+        for i in range(A.shape[0]):
+            Ar = tf.sparse.reduce_sum(tf.sparse.slice(A, (i,0,0), (1,A.shape[1], A.shape[2])), 0, output_is_sparse=True)
+            wi = self.Wr[i]
+            ui = self.ur[i]
+            bi = self.br[i]
+            v1i = self.V1r[i]
+            v2i = self.V2r[i]
+            i, j, k = Ar.indices[:,0], Ar.indices[:,1], tf.expand_dims(tf.ones(len(Ar.indices), dtype=tf.int64)*int(i), -1)
+            e1 = tf.gather(X, i)
+            e2 = tf.gather(X, j)
+            bilinear = tf.einsum("ij,jnk->ink", e1, wi)
+            bilinear = tf.einsum("ink,in->ik", bilinear, e2)
+            v1 = tf.einsum("ij,jk->ik", e1, v1i)
+            v2 = tf.einsum("ij,jk->ik", e2, v2i)
+            vr = v1 + v2
+            activated = self.activation(bilinear + vr + bi)
+            score = tf.einsum("ik,kj->ij", activated, ui)
+            score = tf.squeeze(score)
+            score = self.output_activation(score)
+            i, j = tf.expand_dims(i, -1), tf.expand_dims(j,-1)
+            indices = tf.concat([k,i,j], -1)
+            a = tf.sparse.SparseTensor(indices, score, A.shape)
+            a_pred = tf.sparse.add(a_pred, a)
+        return X, a_pred
 
 
 class RGHAT(l.Layer):
@@ -385,29 +531,40 @@ class RGHAT(l.Layer):
     https://ojs.aaai.org/index.php/AAAI/article/view/6508
     """
 
-    def __init__(self,
-                 nodes_features_dim,
-                 relations_features_dim,
-                 heads=5,
-                 embedding_combination="additive",
-                 dropout_rate=None,
-                 attention_activation="sigmoid",
-                 include_adj_values=False,
-                 message_activation=None,
-                 **kwargs
-                 ):
+    def __init__(
+            self,
+            nodes_features_dim,
+            relations_features_dim,
+            heads=5,
+            embedding_combination="additive",
+            dropout_rate=None,
+            attention_activation="sigmoid",
+            include_adj_values=False,
+            message_activation=None,
+            **kwargs,
+    ):
         super(RGHAT, self).__init__(**kwargs)
         self.nodes_features_dim = nodes_features_dim
         self.relations_features_dim = relations_features_dim
         self.heads = heads
         self.embedding_combination = embedding_combination
-        assert self.embedding_combination in ["additive", "multiplicative", "bi-interaction"]
+        assert self.embedding_combination in [
+            "additive",
+            "multiplicative",
+            "bi-interaction",
+        ]
         self.dropout_rate = dropout_rate
         self.attention_activation = attention_activation
         self.initializer = initializers.GlorotNormal()
         self.include_adj_values = include_adj_values
         self.message_activation = message_activation
-        assert self.message_activation in ["relu", "sigmoid", "tanh", "leaky_relu", None]
+        assert self.message_activation in [
+            "relu",
+            "sigmoid",
+            "tanh",
+            "leaky_relu",
+            None,
+        ]
         self.message_activation = activations.get(self.message_activation)
 
     def build(self, input_shape):
@@ -420,30 +577,59 @@ class RGHAT(l.Layer):
         X_shape, R_shape, A_shape = input_shape
         self.heads_variables = []
         for _ in range(self.heads):
-            self.s_m_kernel = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], self.nodes_features_dim)),
-                                          dtype=tf.float32)
-            self.t_m_kernel = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], self.nodes_features_dim)),
-                                          dtype=tf.float32)
+            self.s_m_kernel = tf.Variable(
+                initial_value=self.initializer(
+                    shape=(X_shape[-1], self.nodes_features_dim)
+                ),
+                dtype=tf.float32,
+            )
+            self.t_m_kernel = tf.Variable(
+                initial_value=self.initializer(
+                    shape=(X_shape[-1], self.nodes_features_dim)
+                ),
+                dtype=tf.float32,
+            )
             self.r_m_kernel = tf.Variable(
-                initial_value=self.initializer(shape=(R_shape[-1], self.relations_features_dim)),
-                dtype=tf.float32)
+                initial_value=self.initializer(
+                    shape=(R_shape[-1], self.relations_features_dim)
+                ),
+                dtype=tf.float32,
+            )
             S_sr_kernel = tf.Variable(
-                initial_value=self.initializer(shape=(self.nodes_features_dim, self.nodes_features_dim)),
-                dtype=tf.float32)
+                initial_value=self.initializer(
+                    shape=(self.nodes_features_dim, self.nodes_features_dim)
+                ),
+                dtype=tf.float32,
+            )
             R_sr_kernel = tf.Variable(
-                initial_value=self.initializer(shape=(self.nodes_features_dim, self.nodes_features_dim)),
-                dtype=tf.float32)
+                initial_value=self.initializer(
+                    shape=(self.nodes_features_dim, self.nodes_features_dim)
+                ),
+                dtype=tf.float32,
+            )
             T_srt_kernel = tf.Variable(
-                initial_value=self.initializer(shape=(self.nodes_features_dim, self.nodes_features_dim)),
-                dtype=tf.float32)
+                initial_value=self.initializer(
+                    shape=(self.nodes_features_dim, self.nodes_features_dim)
+                ),
+                dtype=tf.float32,
+            )
             SR_srt_kernel = tf.Variable(
-                initial_value=self.initializer(shape=(self.nodes_features_dim, self.nodes_features_dim)),
-                dtype=tf.float32)
-            sr_attention_kernel = tf.Variable(initial_value=self.initializer(shape=(self.nodes_features_dim, 1)),
-                                              dtype=tf.float32)
-            srt_attention_kernel = tf.Variable(initial_value=self.initializer(shape=(self.nodes_features_dim, 1)),
-                                               dtype=tf.float32)
-            self.heads_kernel = tf.Variable(initial_value=self.initializer(shape=(1, self.heads)))
+                initial_value=self.initializer(
+                    shape=(self.nodes_features_dim, self.nodes_features_dim)
+                ),
+                dtype=tf.float32,
+            )
+            sr_attention_kernel = tf.Variable(
+                initial_value=self.initializer(shape=(self.nodes_features_dim, 1)),
+                dtype=tf.float32,
+            )
+            srt_attention_kernel = tf.Variable(
+                initial_value=self.initializer(shape=(self.nodes_features_dim, 1)),
+                dtype=tf.float32,
+            )
+            self.heads_kernel = tf.Variable(
+                initial_value=self.initializer(shape=(1, self.heads))
+            )
 
             self.heads_variables.append(
                 {
@@ -452,7 +638,7 @@ class RGHAT(l.Layer):
                     "T_srt_kernel": T_srt_kernel,
                     "SR_srt_kernel": SR_srt_kernel,
                     "sr_attention_kernel": sr_attention_kernel,
-                    "srt_attention_kernel": srt_attention_kernel
+                    "srt_attention_kernel": srt_attention_kernel,
                 }
             )
 
@@ -489,8 +675,11 @@ class RGHAT(l.Layer):
                 embeddings: list of embeddings of each edge, shape Exd
                 update_embeddings: list of new embeddings of each edge, shape Exd
         """
-        self.W = self.add_weight(initializer=self.initializer, shape=(self.nodes_features_dim, self.nodes_features_dim),
-                                 trainable=True)
+        self.W = self.add_weight(
+            initializer=self.initializer,
+            shape=(self.nodes_features_dim, self.nodes_features_dim),
+            trainable=True,
+        )
         sum_emb = embeddings + update_embeddings  # shape: Exd
         return activations.relu(tf.matmul(sum_emb, self.W))
 
@@ -501,8 +690,11 @@ class RGHAT(l.Layer):
                     embeddings: list of embeddings of each edge, shape Exd
                     update_embeddings: list of new embeddings of each edge, shape Exd
         """
-        self.W = self.add_weight(initializer=self.initializer, shape=(self.nodes_features_dim, self.nodes_features_dim),
-                                 trainable=True)
+        self.W = self.add_weight(
+            initializer=self.initializer,
+            shape=(self.nodes_features_dim, self.nodes_features_dim),
+            trainable=True,
+        )
         mult_emb = embeddings * update_embeddings
         return activations.relu(tf.matmul(mult_emb, self.W))
 
@@ -513,7 +705,10 @@ class RGHAT(l.Layer):
                     embeddings: list of embeddings of each edge, shape Exd
                     update_embeddings: list of new embeddings of each edge, shape Exd
         """
-        return 0.5 * (self.additive(embeddings, update_embeddings) + self.multiplicative(embeddings, update_embeddings))
+        return 0.5 * (
+                self.additive(embeddings, update_embeddings)
+                + self.multiplicative(embeddings, update_embeddings)
+        )
 
     def call(self, inputs, **kwargs):
         """
@@ -543,7 +738,7 @@ class RGHAT(l.Layer):
         edges = A.indices
         batch = len(edges)
         for i in range(self.heads):
-            '''
+            """
             # Relational level attention s->r
             batch_emb_head = []
             for b in range(len(edges)//batch):
@@ -551,32 +746,46 @@ class RGHAT(l.Layer):
                 if not b%(len(edges)//batch):
                     end_idx = None
                 else:
-                    end_idx = b*(batch+1)'''
+                    end_idx = b*(batch+1)"""
             a_s = tf.gather(message_s, edges[:, 1])  # [star_idx:end_idx, 1])
             a_s = tf.matmul(a_s, self.heads_variables[i]["S_sr_kernel"])
             a_r = tf.gather(message_r, edges[:, 0])  # star_idx:end_idx, 0])
             a_r = tf.matmul(a_r, self.heads_variables[i]["R_sr_kernel"])
             a_sr = a_s + a_r
-            a_sr_attention = tf.matmul(a_sr, self.heads_variables[i]["sr_attention_kernel"])
-            attention_sr = unsorted_segment_softmax(a_sr_attention, edges[:, 0])  # star_idx:end_idx, 0])
+            a_sr_attention = tf.matmul(
+                a_sr, self.heads_variables[i]["sr_attention_kernel"]
+            )
+            attention_sr = unsorted_segment_softmax(
+                a_sr_attention, edges[:, 0]
+            )  # star_idx:end_idx, 0])
             if self.dropout_rate:
                 attention_sr = l.Dropout(self.dropout_rate)(attention_sr)
 
             # Entity level attention sr->t
-            a_sr_ = tf.matmul(a_sr, self.heads_variables[i]["SR_srt_kernel"])  # shape: Exd
+            a_sr_ = tf.matmul(
+                a_sr, self.heads_variables[i]["SR_srt_kernel"]
+            )  # shape: Exd
             a_t = tf.gather(message_t, edges[:, 2])  # star_idx:end_idx, 2])
             a_t = tf.matmul(a_t, self.heads_variables[i]["T_srt_kernel"])  # shape: Exd
             a_srt = a_sr_ + a_t  # shape: Exd
-            a_sr_t_attention = tf.matmul(a_srt, self.heads_variables[i]["srt_attention_kernel"])
-            attention_sr_t = unsorted_segment_softmax(a_sr_t_attention,
-                                                      edges[:, 2])  # star_idx:end_idx, 2])  # shape: Ex1
+            a_sr_t_attention = tf.matmul(
+                a_srt, self.heads_variables[i]["srt_attention_kernel"]
+            )
+            attention_sr_t = unsorted_segment_softmax(
+                a_sr_t_attention, edges[:, 2]
+            )  # star_idx:end_idx, 2])  # shape: Ex1
             if self.dropout_rate:
-                attention_sr_t = l.Dropout(self.dropout_rate)(attention_sr_t)  # shape: Ex1
+                attention_sr_t = l.Dropout(self.dropout_rate)(
+                    attention_sr_t
+                )  # shape: Ex1
 
             attention_srt = attention_sr * attention_sr_t
-            update_t = attention_srt * tf.gather(a_sr, edges[:, 2])  # star_idx:end_idx, 2])
-            update_embeddings = tf.math.unsorted_segment_sum(update_t, edges[:, 2],
-                                                             A.shape[2])  # star_idx:end_idx, 2], A.shape[2])
+            update_t = attention_srt * tf.gather(
+                a_sr, edges[:, 2]
+            )  # star_idx:end_idx, 2])
+            update_embeddings = tf.math.unsorted_segment_sum(
+                update_t, edges[:, 2], A.shape[2]
+            )  # star_idx:end_idx, 2], A.shape[2])
 
             if self.embedding_combination == "additive":
                 new_embeddings = self.additive(message_t, update_embeddings)
@@ -591,8 +800,8 @@ class RGHAT(l.Layer):
             outputs_head.append(new_embeddings)  # batch_emb_head)
         outputs_head = tf.concat(outputs_head, 0)
         # Combine heads
-        head_weights = activations.softmax(self.heads_kernel)
-        head_weights = l.Dropout(0.5)(head_weights)
+        heads_kernel = l.Dropout(self.dropout_rate)(self.heads_kernel)
+        head_weights = activations.softmax(heads_kernel)
         # Aggregate batch heads embeddings
         new_embeddings = tf.einsum("hnd,kh->knd", outputs_head, head_weights)
         new_embeddings = tf.squeeze(new_embeddings, 0)
@@ -611,24 +820,31 @@ class CrossAggregation(l.Layer):
         self.dropout_rate = dropout_rate
 
     def build(self, input_shape):
-        X1_shape, X2_shape, A = input_shape
-        edgelist = A.indices
+        X_s, X_t, A = input_shape
         if self.output_dim is None:
-            self.output_dim = X1_shape[-1]
-        self.kernel = tf.Variable(initial_value=self.initializer(shape=(X1_shape[-1], self.nodes_features_dim)))
+            self.output_dim = X_s[-1]
+        self.kernel = tf.Variable(
+            initial_value=self.initializer(
+                shape=(X_s[-1], self.output_dim)
+            )
+        )
 
     def call(self, inputs, **kwargs):
-        X1, X2, A = inputs
+        X_s, X_t, A = inputs
         edgelist = A.indices
-        h1 = tf.gather(X1, edgelist[:, 0])
-        h2 = tf.gather(X2, edgelist[:, 1])
-        outer = tf.einsum('ij,ik->ijk', h1, h2)
-        new_emb_list = tf.matmul(outer, self.kernel)
-        attention = unsorted_segment_softmax(new_emb_list, edgelist[:, 1])
+        h1 = tf.gather(X_s, edgelist[:, 0])
+        h2 = tf.gather(X_t, edgelist[:, 1])
+        outer = tf.einsum("ij,ik->ijk", h1, h2)
+        attn_score = tf.matmul(outer, self.kernel)
         if self.dropout_rate:
-            attention = l.Dropout(self.dropout_rate)(attention)
-        attended_embeddings = new_emb_list * attention
-        update_embeddings = tf.math.unsorted_segment_sum(attended_embeddings, edgelist[:, 1])
+            attn_score = l.Dropout(self.dropout_rate)(attn_score)
+        attention = unsorted_segment_softmax(attn_score, edgelist[:, 1])
+        attention = tf.sparse.SparseTensor(edgelist, attention, A.shape)
+        '''attended_embeddings = X_s * attention
+        update_embeddings = tf.math.unsorted_segment_sum(
+            attended_embeddings, edgelist[:, 1]
+        )'''
+        update_embeddings = tf.sparse.sparse_dense_matmul(attention, X)
         return update_embeddings
 
 
@@ -636,7 +852,7 @@ class GAIN(l.Layer):
     """
     Implementation of GAIN: Graph Attention & Interaction Network for Inductive Semi-Supervised Learning over
     Large-scale Graphs
-    https://arxiv.org/abs/2011.01393
+    https://arxiv.org/pdf/2011.01393.pdf
     """
 
     def __init__(self, aggregators_list, output_dim, **kwargs):
@@ -647,12 +863,23 @@ class GAIN(l.Layer):
 
     def build(self, input_shape):
         X_shape, R_shape, A_shape = input_shape
-        self.aggregator_kernel_self = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], 1)))
+        self.aggregator_kernel_self = tf.Variable(
+            initial_value=self.initializer(shape=(X_shape[-1], 1))
+        )
         self.aggregator_kernel2_aggregator = None
 
 
 class GAT(l.Layer):
-    def __init__(self, hidden_dim, dropout_rate=0.5, **kwargs):
+    def __init__(
+            self,
+            hidden_dim,
+            dropout_rate=0.5,
+            activation="relu",
+            add_identity=False,
+            add_bias=True,
+            return_attention=False,
+            **kwargs,
+    ):
         """
         Implementation of Graph Atttention Networks: https://arxiv.org/pdf/2102.07200.pdf
         """
@@ -660,13 +887,25 @@ class GAT(l.Layer):
         self.initializer = initializers.GlorotNormal()
         self.hidden_dim = hidden_dim
         self.dropout_rate = dropout_rate
+        self.return_attention = return_attention
+        self.activation = activation
+        self.add_bias = add_bias
+        self.add_identity = add_identity
 
     def build(self, input_shape):
         X_shape, A_shape = input_shape
-        self.kernel1 = tf.Variable(initial_value=self.initializer(shape=(self.hidden_dim, 1)))
-        self.kernel2 = tf.Variable(initial_value=self.initializer(shape=(self.hidden_dim, 1)))
-        self.message_kernel_self = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], self.hidden_dim)))
-        self.message_kernel_ngb = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], self.hidden_dim)))
+        self.kernel1 = tf.Variable(
+            initial_value=self.initializer(shape=(self.hidden_dim, 1))
+        )
+        self.kernel2 = tf.Variable(
+            initial_value=self.initializer(shape=(self.hidden_dim, 1))
+        )
+        self.message_kernel_self = tf.Variable(
+            initial_value=self.initializer(shape=(X_shape[-1], self.hidden_dim))
+        )
+        # self.message_kernel_ngb = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], self.hidden_dim)))
+        if self.add_bias:
+            self.bias = tf.Variable(initial_value=self.initializer(shape=(self.hidden_dim,)))
 
     def message_self(self, X):
         return tf.matmul(X, self.message_kernel_self)
@@ -676,50 +915,72 @@ class GAT(l.Layer):
 
     def call(self, inputs, **kwargs):
         X, A = inputs
+        if self.add_identity:
+            A = add_self_loop(A)
         edgelist = A.indices
         x1 = self.message_self(X)
-        x1 = tf.gather(x1, edgelist[:, 0])
-        x1_att = tf.matmul(x1, self.kernel1)
-        x2 = self.message_ngb(X)
-        x2 = tf.gather(x2, edgelist[:, 1])
-        x2_att = tf.matmul(x2, self.kernel2)
-        att_score = x1_att + x2_att
-        attention = unsorted_segment_softmax(att_score, edgelist[:, 1])
+        e1 = tf.gather(x1, edgelist[:, 1])
+        e1_att = tf.matmul(e1, self.kernel1)
+        # x2 = self.message_ngb(X)
+        e2 = tf.gather(x1, edgelist[:, 0])
+        e2_att = tf.matmul(e2, self.kernel2)
+        att_score = e1_att + e2_att
+        att_score = activations.get(self.activation)(att_score)
         if self.dropout_rate:
-            attention = l.Dropout(self.dropout_rate)(attention)
-        attended_embeddings = tf.gather(x1, edgelist[:, 0]) * attention
-        update_embeddings = tf.math.unsorted_segment_sum(attended_embeddings, edgelist[:, 1], A.shape[-1])
-        if self.dropout_rate:
-            update_embeddings = l.Dropout(self.dropout_rate)(update_embeddings)
-        return update_embeddings, A
+            att_score = l.Dropout(self.dropout_rate)(att_score)
+            x1 = l.Dropout(self.dropout_rate)(x1)
+        att_score = tf.sparse.SparseTensor(edgelist, tf.squeeze(att_score), A.shape)
+        attention = tf.sparse.softmax(att_score)
+        update_embeddings = tf.sparse.sparse_dense_matmul(attention, x1)
+        if self.add_bias:
+            update_embeddings += self.bias
+        """if self.dropout_rate:
+            update_embeddings = l.Dropout(self.dropout_rate)(update_embeddings)"""
+        if self.return_attention:
+            return attention, update_embeddings, A
+        else:
+            return update_embeddings, A
 
 
 class MultiHeadGAT(l.Layer):
-    def __init__(self, heads, hidden_dim, **kwargs):
+    def __init__(self, heads, hidden_dim, return_attention=False, **kwargs):
         super(MultiHeadGAT, self).__init__(**kwargs)
         self.heads = heads
         self.hidden_dim = hidden_dim
         self.initializer = initializers.GlorotNormal()
+        self.return_attention = return_attention
+        self.attention = []
 
     def build(self, input_shape):
         X_shape, A_shape = input_shape
         self.attention_heads = []
         for _ in range(self.heads):
-            self.attention_heads.append(GAT(self.hidden_dim))
-        self.heads_kernel = tf.Variable(initial_value=self.initializer(shape=(self.heads, 1)))
+            self.attention_heads.append(
+                GAT(self.hidden_dim, return_attention=self.return_attention)
+            )
+        self.heads_kernel = tf.Variable(
+            initial_value=self.initializer(shape=(self.heads, 1))
+        )
 
     def call(self, inputs, **kwargs):
         heads_emb = []
         for i in range(self.heads):
-            emb, A = self.attention_heads[i](inputs)
+            if self.return_attention:
+                att, emb, A = self.attention_heads[i](inputs)
+                self.attention.append(att)
+            else:
+                emb, A = self.attention_heads[i](inputs)
             emb = tf.expand_dims(emb, 0)
             heads_emb.append(emb)
         heads_emb = tf.concat(heads_emb, 0)
-        heads_comb = activations.get("softmax")(self.heads_kernel)
-        heads_comb = l.Dropout(0.5)(heads_comb)
+        heads_kernel = l.Dropout(0.5)(self.heads_kernel)
+        heads_comb = activations.get("softmax")(heads_kernel)
         combined_heads = tf.einsum("hnd,hk->knd", heads_emb, heads_comb)
         combined_heads = tf.squeeze(combined_heads, 0)
-        return combined_heads, A
+        if self.return_attention:
+            return self.attention, combined_heads, A
+        else:
+            return combined_heads, A
 
 
 class GCN(l.Layer):
@@ -736,7 +997,9 @@ class GCN(l.Layer):
 
     def build(self, input_shape):
         X_shape, A_shape = input_shape
-        self.W1 = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], self.hidden_dim)))
+        self.W1 = tf.Variable(
+            initial_value=self.initializer(shape=(X_shape[-1], self.hidden_dim))
+        )
         # self.W2 = tf.Variable(initial_value=self.initializer(shape=(self.hidden_dim, self.output_dim)))
 
     def call(self, inputs, **kwargs):
@@ -768,7 +1031,9 @@ class GCNDirected(l.Layer):
     https://arxiv.org/abs/1907.08990
     """
 
-    def __init__(self, hidden_dim, activation="relu", dropout_rate=0, layer=0, **kwargs):
+    def __init__(
+            self, hidden_dim, activation="relu", dropout_rate=0.5, layer=0, **kwargs
+    ):
         super(GCNDirected, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
         self.initializer = initializers.GlorotNormal()
@@ -778,12 +1043,14 @@ class GCNDirected(l.Layer):
 
     def build(self, input_shape):
         X_shape, A_shape = input_shape
-        self.kernel1 = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], self.hidden_dim)),
-                                   name=f"kernel l{self.layer}")
+        self.kernel1 = tf.Variable(
+            initial_value=self.initializer(shape=(X_shape[-1], self.hidden_dim)),
+            name=f"kernel l{self.layer}",
+        )
 
     def call(self, inputs, **kwargs):
         X, A = inputs
-        A = self.add_identity(A)
+        """#A = self.add_identity(A)
         D_out = tf.reduce_sum(A, axis=1)
         D_out_inv = 1 / D_out
         D_out_inv_mat = tf.linalg.diag([D_out_inv])[0]
@@ -815,11 +1082,16 @@ class GCNDirected(l.Layer):
                    tf.matmul(tf.matmul(phi_sqrt_mat, tf.transpose(P)), phi_sqrt_inv_mat))
         L2 = 0.5 * (tf.matmul(tf.matmul(D_out_sqrt_mat, P), D_out_inv_sqrt_mat) +
                     tf.matmul(tf.matmul(D_out_sqrt_mat, tf.transpose(P)), D_out_inv_sqrt_mat))
+        """
         # L = tf.constant(L)
-        t = tf.matmul(X, self.kernel1)
-        print(f"t {t}")
-        Z = tf.matmul(L, t)
-        print(f"Z {Z}")
+        # L = laplacian(A, use_out_degree=True)
+        G = ntx.from_numpy_matrix(A.numpy(), create_using=ntx.DiGraph)
+        L = directed_laplacian_matrix(G, walk_type="pagerank")
+        L = -L + tf.eye(A.shape[0])
+        xt = tf.matmul(X, self.kernel1)
+        # print(f"t {xt}")
+        Z = tf.matmul(L, xt)
+        # print(f"Z {Z}")
         act = activations.get(self.activation)(Z)
         if self.dropout_rate:
             act = l.Dropout(self.dropout_rate)(act)
@@ -845,8 +1117,8 @@ class OrbitModel(l.Layer):
     Implementation of From One Point to A Manifold: Orbit Models for Precise and Efficient Knowledge Graph Embedding
     https://arxiv.org/pdf/1512.04792v2.pdf
     """
-    pass
 
+    pass
 
 
 def unsorted_segment_softmax(x, indices, n_nodes=None):
@@ -872,7 +1144,7 @@ def unsorted_segment_softmax(x, indices, n_nodes=None):
     return e_x
 
 
-'''def attention3d(self, X: tf.Tensor, R, A: tf.sparse.SparseTensor):
+"""def attention3d(self, X: tf.Tensor, R, A: tf.sparse.SparseTensor):
     self_attention = tf.matmul(message_s, self.source_attention_kernel)
     self_attention = tf.gather(self_attention, A.indices[:, 1])
     target_attention = tf.matmul(message_t, self.target_attention_kernel)
@@ -891,7 +1163,7 @@ def unsorted_segment_softmax(x, indices, n_nodes=None):
     #attention = tf.sparse.from_dense(attention, A.indices, A.shape)
     if self.dropout_rate is not None:
         attention = l.Dropout(self.dropout_rate)(attention)
-    return attention'''
+    return attention"""
 
 
 def stable_softmax_3d(attention, A: tf.sparse.SparseTensor):
@@ -911,8 +1183,7 @@ def stable_softmax_3d(attention, A: tf.sparse.SparseTensor):
     return expz
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     nodes = 20
     ft = 10
     r = 15
@@ -921,7 +1192,7 @@ if __name__ == '__main__':
     R = tf.Variable(np.random.normal(size=(r, ft)), dtype=tf.float32)
     X = tf.Variable(np.random.normal(size=(nodes, ft)), dtype=tf.float32)
 
-    rghat = RGHAT(15, 15, "additive", .5)
+    rghat = RGHAT(15, 15, "additive", 0.5)
     A0 = tf.sparse.slice(A, (0, 0, 0, 0), (1, r, nodes, nodes))
     A0_dense = tf.sparse.to_dense(A0)
     A0_squeeze = tf.squeeze(A0_dense, axis=0)

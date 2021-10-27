@@ -4,15 +4,16 @@ import tensorflow.keras.layers as l
 
 @tf.function
 def square_loss(y_true, y_pred):
-    if isinstance(y_true, tf.sparse.SparseTensor) and isinstance(y_pred, tf.sparse.SparseTensor):
+    if isinstance(y_true, tf.sparse.SparseTensor) and isinstance(
+        y_pred, tf.sparse.SparseTensor
+    ):
         diff = tf.square(y_true.values - y_pred.values)
-        return tf.reduce_sum(diff)
+        return tf.sqrt(tf.reduce_sum(diff))
 
     if isinstance(y_true, tf.Tensor) and isinstance(y_pred, tf.Tensor):
         diff = tf.square(y_true - y_pred)
-        print(f"DIFF SHAPE {diff.shape}")
         diff = tf.reshape(diff, [-1])
-        return tf.reduce_sum(diff)
+        return tf.sqrt(tf.reduce_sum(diff))
 
     if isinstance(y_true, tf.sparse.SparseTensor) and isinstance(y_pred, tf.Tensor):
         y_true = tf.sparse.to_dense(y_true)
@@ -21,13 +22,20 @@ def square_loss(y_true, y_pred):
         diff = tf.reshape(diff, [-1])
         return tf.reduce_sum(diff)
 
-    raise Exception(f"Inputs and Predictions are of different types: {type(y_true)}, {type(y_pred)}")
+    raise Exception(
+        f"Inputs and Predictions are of different types: {type(y_true)}, {type(y_pred)}"
+    )
 
 
 @tf.function
 def log_normal_likelihood_loss(y_true, mu, sigma):
-    likelihood = - (tf.reduce_sum(tf.math.square(tf.math.log(y_true.values) - mu) / (2 * tf.math.square(sigma)))
-                    + tf.reduce_sum(tf.math.log(sigma)))
+    likelihood = -(
+        tf.reduce_sum(
+            tf.math.square(tf.math.log(y_true.values) - mu)
+            / (2 * tf.math.square(sigma))
+        )
+        + tf.reduce_sum(tf.math.log(sigma))
+    )
     nll = -likelihood
     print(f"loss shape: {nll.shape}")
     return nll
@@ -72,6 +80,6 @@ class EmbeddingSmoothnessRegularizer(l.Layer):
         self.rate = rate
 
     def call(self, inputs, **kwargs):
-        loss = self.rate*embedding_smoothness(*inputs)
+        loss = self.rate * embedding_smoothness(*inputs)
         self.add_loss(loss)
         return loss
