@@ -8,6 +8,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import matplotlib._color_data as mcd
 import pycountry_convert as pcc
+
 # from geopy.geocoders import Nominatim
 # import geopandas as gpd
 import cartopy.crs as ccrs
@@ -19,8 +20,9 @@ import tensorflow as tf
 from src.comtrade_data_loader import idx_to_countries, idx_to_product
 
 YEARS_FOLDER = "C:\\Users\\claud\\OneDrive\\Documents\\PROJECTS\\Master-Thesis"
-COUNTRIES_CODES_PATH = os.path.join(os.getcwd(), "Comtrade", "Reference Table",
-                                    "Comtrade Country Code and ISO list.xls")
+COUNTRIES_CODES_PATH = os.path.join(
+    os.getcwd(), "Comtrade", "Reference Table", "Comtrade Country Code and ISO list.xls"
+)
 
 
 def relational_graph_plotter(graph):
@@ -44,10 +46,21 @@ def from_data_sparse_to_ntx(data_sp):
     idx2prod = idx_to_product(r)
     idx2country_i = idx_to_countries(i)
     idx2country_j = idx_to_countries(j)
-    data = pd.DataFrame({"ReporterISO3": idx2country_i, "PartnerISO3": idx2country_j, "ProductCode2": idx2prod})
-    G = nx.from_pandas_edgelist(df=data[["ReporterISO3", "PartnerISO3", "TradeValue", "ProductCode2"]],
-                                source="ReporterISO3", target="PartnerISO3", edge_attr=["TradeValue"],
-                                edge_key="ProductCode2", create_using=nx.MultiDiGraph())
+    data = pd.DataFrame(
+        {
+            "ReporterISO3": idx2country_i,
+            "PartnerISO3": idx2country_j,
+            "ProductCode2": idx2prod,
+        }
+    )
+    G = nx.from_pandas_edgelist(
+        df=data[["ReporterISO3", "PartnerISO3", "TradeValue", "ProductCode2"]],
+        source="ReporterISO3",
+        target="PartnerISO3",
+        edge_attr=["TradeValue"],
+        edge_key="ProductCode2",
+        create_using=nx.MultiDiGraph(),
+    )
     return G
 
 
@@ -72,10 +85,14 @@ def get_iso2_long_lat():
         latitude = np.asarray(latitude)
         longitude = np.asarray(longitude)
 
-        df = pd.DataFrame({"code": codes, "latitude": latitude, "longitude": longitude, "name": name})
+        df = pd.DataFrame(
+            {"code": codes, "latitude": latitude, "longitude": longitude, "name": name}
+        )
         cc = {}
         for i, row in df[["code", "latitude", "longitude"]].iterrows():
-            cc[row["code"]] = np.asarray([row["longitude"], row["latitude"]], dtype=np.float32)
+            cc[row["code"]] = np.asarray(
+                [row["longitude"], row["latitude"]], dtype=np.float32
+            )
         print(f"saving pickle")
         with open("./Data/iso2_long_lat.pkl", "wb") as file:
             pkl.dump(cc, file)
@@ -90,8 +107,12 @@ def from_edgelist_to_pd(edgelist, values):
     df_convert = pd.read_excel(COUNTRIES_CODES_PATH)
     edgelist = np.asarray(edgelist)
     for i in range(len(edgelist)):
-        c1 = df_convert[df_convert["Country Code"] == edgelist[i, 0]]["ISO3-digit Alpha"]
-        c2 = df_convert[df_convert["Country Code"] == edgelist[i, 1]]["ISO3-digit Alpha"]
+        c1 = df_convert[df_convert["Country Code"] == edgelist[i, 0]][
+            "ISO3-digit Alpha"
+        ]
+        c2 = df_convert[df_convert["Country Code"] == edgelist[i, 1]][
+            "ISO3-digit Alpha"
+        ]
         edgelist[i, 0] = c1
         edgelist[i, 1] = c2
 
@@ -99,16 +120,34 @@ def from_edgelist_to_pd(edgelist, values):
         edgelist[i, 0] = df_convert[edgelist[i, 0]]
         edgelist[i, 1] = df_convert[edgelist[i, 1]]
 
-    df = pd.DataFrame({"code1": edgelist[:, 0], "code2": edgelist[:1], "prod": edgelist[:, 2], "tv": values})
-    G = nx.from_pandas_edgelist(df=df,
-                                source="code1", target="code2", edge_attr=["tv"],
-                                edge_key="prod", create_using=nx.MultiDiGraph())
+    df = pd.DataFrame(
+        {
+            "code1": edgelist[:, 0],
+            "code2": edgelist[:1],
+            "prod": edgelist[:, 2],
+            "tv": values,
+        }
+    )
+    G = nx.from_pandas_edgelist(
+        df=df,
+        source="code1",
+        target="code2",
+        edge_attr=["tv"],
+        edge_key="prod",
+        create_using=nx.MultiDiGraph(),
+    )
 
     return G
 
 
-def select_edges(edge_list: [(int, int, str)], values: [int], years: [int], code1: [str], code2: [str],
-                 products: [str]):
+def select_edges(
+        edge_list: [(int, int, str)],
+        values: [int],
+        years: [int],
+        code1: [str],
+        code2: [str],
+        products: [str],
+):
     subgraph_edgelist = []
     subgraph_values = []
     for row, tv in zip(edge_list, values):
@@ -130,16 +169,27 @@ def load_from_WITS(folder=YEARS_FOLDER, t1=1989, t2=1989):
         else:
             month = "Jan17"
         file_name = f"COUNTRY_CAGR_{str(y)}_EXPORT_2020{month}.csv"
-        df = pd.read_csv(os.path.join(folder, file_name), converters={"ProductCode": str})
-        df = df[(df["ReporterISO3"] != "WLD") &
-                (df["ReporterISO3"] != "PartnerISO3") &
-                (df["PartnerISO3"] != "WLD")]
+        df = pd.read_csv(
+            os.path.join(folder, file_name), converters={"ProductCode": str}
+        )
+        df = df[
+            (df["ReporterISO3"] != "WLD")
+            & (df["ReporterISO3"] != "PartnerISO3")
+            & (df["PartnerISO3"] != "WLD")
+            ]
         df["ProductCode2"] = df["ProductCode"].astype(str).str[:4]
-        codes = df.groupby(["ProductCode2", "ReporterISO3", "PartnerISO3"])["TradeValue"].sum()
+        codes = df.groupby(["ProductCode2", "ReporterISO3", "PartnerISO3"])[
+            "TradeValue"
+        ].sum()
         codes = pd.DataFrame(codes).reset_index()
-        G = nx.from_pandas_edgelist(df=codes[["ReporterISO3", "PartnerISO3", "TradeValue", "ProductCode2"]],
-                                    source="ReporterISO3", target="PartnerISO3", edge_attr=["TradeValue"],
-                                    edge_key="ProductCode2", create_using=nx.MultiDiGraph())
+        G = nx.from_pandas_edgelist(
+            df=codes[["ReporterISO3", "PartnerISO3", "TradeValue", "ProductCode2"]],
+            source="ReporterISO3",
+            target="PartnerISO3",
+            edge_attr=["TradeValue"],
+            edge_key="ProductCode2",
+            create_using=nx.MultiDiGraph(),
+        )
 
         yield G
 
@@ -150,8 +200,14 @@ def get_product_subgraph(G: nx.MultiGraph, prod_key: str) -> nx.Graph:
     return G_sub
 
 
-def draw_subgraph(G: nx.MultiDiGraph, prod_keys: [str], nodes: [str] = None, log_scale=True, normalize=True,
-                  quantile=.10):
+def draw_subgraph(
+        G: nx.MultiDiGraph,
+        prod_keys: [str],
+        nodes: [str] = None,
+        log_scale=True,
+        normalize=True,
+        quantile=0.10,
+):
     lat_long = get_iso2_long_lat()
     radius = np.linspace(-0.1, -0.5, len(prod_keys))
     col_idx = np.arange(0, len(prod_keys))
@@ -195,18 +251,25 @@ def draw_subgraph(G: nx.MultiDiGraph, prod_keys: [str], nodes: [str] = None, log
             xy1 = G_sub.nodes[edge[0]]["pos"]
             xy2 = G_sub.nodes[edge[1]]["pos"]
             plt.scatter([xy1[0], xy2[0]], [xy1[1], xy2[1]], color="b", s=10)
-            ax.annotate("",
-                        xy=xy2, xycoords='data',
-                        xytext=xy1, textcoords='data',
-                        arrowprops=dict(arrowstyle="->", color=colors[i],
-                                        shrinkA=5, shrinkB=5,
-                                        patchA=None, patchB=None,
-                                        connectionstyle=f"arc3,rad={radius[i]}",
-                                        lw=width[j],
-                                        ),
-                        transform=ccrs.Geodetic()
-                        )
+            ax.annotate(
+                "",
+                xy=xy2,
+                xycoords="data",
+                xytext=xy1,
+                textcoords="data",
+                arrowprops=dict(
+                    arrowstyle="->",
+                    color=colors[i],
+                    shrinkA=5,
+                    shrinkB=5,
+                    patchA=None,
+                    patchB=None,
+                    connectionstyle=f"arc3,rad={radius[i]}",
+                    lw=width[j],
+                ),
+                transform=ccrs.Geodetic(),
+            )
 
     ax.stock_img()
-    ax.add_feature(cfeature.BORDERS, alpha=.5, linestyle=":")
-    ax.add_feature(cfeature.COASTLINE, alpha=.5)
+    ax.add_feature(cfeature.BORDERS, alpha=0.5, linestyle=":")
+    ax.add_feature(cfeature.COASTLINE, alpha=0.5)
