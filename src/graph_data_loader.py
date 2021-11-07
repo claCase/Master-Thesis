@@ -273,3 +273,37 @@ def draw_subgraph(
     ax.stock_img()
     ax.add_feature(cfeature.BORDERS, alpha=0.5, linestyle=":")
     ax.add_feature(cfeature.COASTLINE, alpha=0.5)
+
+
+def plot_names(X, ax=None):
+
+    with open(
+            "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/idx_to_countries.pkl",
+            "rb",
+    ) as file:
+        idx2country = pkl.load(file)
+    with open(
+            "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/iso3_to_name.pkl",
+            "rb",
+    ) as file:
+        iso3_to_name = pkl.load(file)
+    iso3 = [idx2country[i] for i in range(len(X))]
+    names = [iso3_to_name[int(i)] for i in iso3]
+    if ax is None:
+        fig, ax = plt.subplots()
+        ax.scatter(X[:, 0], X[:, 1])  # , X[:, 2])
+    for c, (x, y) in zip(names, X[:, :2]):
+        ax.text(x, y, f"{c}", size=7)
+
+def plot_cum_trade(A):
+    with open("A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\idx_to_countries.pkl", "rb") as file:
+        cn = pkl.load(file)
+    with open("A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\iso3_to_name.pkl", "rb") as file:
+        cnames = pkl.load(file)
+
+    sum_trade = np.sum(A, 1)
+    sc = np.argsort(sum_trade)
+    lc = [cn[k] for k in sc]
+    snames = [cnames[int(k)] for k in lc]
+    plt.bar(np.arange(len(sum_trade)), np.sort(sum_trade)[::-1])
+    plt.xticks(np.arange(len(sum_trade)), snames[::-1], rotation="vertical", fontsize=7)

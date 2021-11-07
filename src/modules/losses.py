@@ -68,8 +68,7 @@ class SparsityRegularizerLayer(l.Layer):
             loss = self.rate * tf.reduce_sum(tf.square(inputs.values))
             self.add_loss(loss)
         if isinstance(inputs, tf.Tensor):
-            inputs = tf.reshape(inputs, [-1])
-            loss = self.rate * tf.reduce_sum(tf.square(inputs))
+            loss = self.rate * tf.math.sqrt(tf.reduce_sum(tf.square(inputs)), (0,1))
             self.add_loss(loss)
         return loss
 
@@ -83,3 +82,4 @@ class EmbeddingSmoothnessRegularizer(l.Layer):
         loss = self.rate * embedding_smoothness(*inputs)
         self.add_loss(loss)
         return loss
+

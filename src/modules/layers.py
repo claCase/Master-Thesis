@@ -6,12 +6,12 @@ from tensorflow.keras import layers as l
 from tensorflow.keras import activations
 from tensorflow.keras import initializers
 import tensorflow.keras.backend as k
-from src.modules.graph_utils import make_data
+from src.modules.utils import make_data
 from tensorflow.keras.losses import mean_squared_error, sparse_categorical_crossentropy
 from scipy.sparse.csgraph import laplacian
 import scipy.sparse.linalg
 from networkx.linalg import directed_laplacian_matrix
-from src.modules.graph_utils import add_self_loop
+from src.modules.utils import add_self_loop
 
 
 # physical_devices = tf.config.list_physical_devices('GPU')
@@ -72,7 +72,7 @@ class BilinearLayer(l.Layer):
 
 
 class Bilinear(l.Layer):
-    def __init__(self, hidden_dim=5, activation=None, **kwargs):
+    '''def __init__(self, hidden_dim=5, activation=None, **kwargs):
         super(Bilinear, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
         self.activation = activation
@@ -91,7 +91,31 @@ class Bilinear(l.Layer):
         A = tf.matmul(x_left, x_left, transpose_b=True)
         if self.activation is not None:
             A = activations.get(self.activation)(A)
-        return self.X, A
+        return self.X, A'''
+    def __init__(self, hidden_dim=5, activation=None, **kwargs):
+        super(Bilinear, self).__init__(**kwargs)
+        self.hidden_dim = hidden_dim
+        self.activation = activation
+        self.initializer = tf.keras.initializers.GlorotNormal()
+
+    def build(self, input_shape):
+        self.R = tf.Variable(
+            initial_value=self.initializer(shape=(self.hidden_dim, self.hidden_dim))
+        )
+        self.X = tf.Variable(
+            initial_value=self.initializer(shape=(input_shape[0], self.hidden_dim))
+        )
+
+    def call(self, inputs, **kwargs):
+        Q, W = tf.linalg.qr(self.X, full_matrices=False)
+        Z = tf.matmul(tf.matmul(W, self.R), W, transpose_b=True)
+        A = tf.matmul(tf.matmul(Q, Z), Q, transpose_b=True)
+        '''x_left = tf.matmul(self.X, self.R)
+        A = tf.matmul(x_left, x_left, transpose_b=True)
+        '''
+        A = activations.get(self.activation)(A)
+        #self.add_loss(tf.matmul(self.Q, self.Q, transpose_b=True) - tf.eye(self.Q.shape[0]))
+        return tf.matmul(Q, W), A
 
 
 class BilinearSparse(l.Layer):
@@ -126,17 +150,18 @@ class BilinearSparse(l.Layer):
 
 
 class BilinearDecoderDense(l.Layer):
-    def __init__(self, activation="relu", diagonal=False, **kwargs):
+    def __init__(self, activation="relu", diagonal=False, qr=False, **kwargs):
         super(BilinearDecoderDense, self).__init__(**kwargs)
         self.initializer = initializers.GlorotNormal()
         self.activation = activation
         self.diagonal = diagonal
+        self.qr = qr
 
     def build(self, input_shape):
         X_shape, A_shape = input_shape
         if self.diagonal:
             self.R = tf.Variable(
-                initial_value=self.initializer(shape=(X_shape[-1])), name="R_bilinear"
+                initial_value=self.initializer(shape=(X_shape[-1],)), name="R_bilinear"
             )
             self.R = tf.linalg.diag(self.R)
         else:
@@ -147,11 +172,17 @@ class BilinearDecoderDense(l.Layer):
 
     def call(self, inputs, **kwargs):
         X, A = inputs
-        x_left = tf.matmul(X, self.R)
-        A = tf.matmul(x_left, X, transpose_b=True)
-        if self.activation is not None:
+        if not self.qr:
+            x_left = tf.matmul(X, self.R)
+            A = tf.matmul(x_left, X, transpose_b=True)
             A = activations.get(self.activation)(A)
-        return X, A
+            return X, A
+        else:
+            Q, W = tf.linalg.qr(X, full_matrices=False)
+            Z = tf.matmul(tf.matmul(W, self.R), W, transpose_b=True)
+            A = tf.matmul(tf.matmul(Q, Z), Q, transpose_b=True)
+            A = activations.get(self.activation)(A)
+            return tf.matmul(Q, W), A
 
 
 class BilinearDecoderSparse(l.Layer):

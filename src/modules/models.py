@@ -9,7 +9,7 @@ import tensorflow.keras.backend as k
 from src.modules import layers
 import tensorflow_probability as tfp
 from src.modules import losses
-from src.modules.graph_utils import sample_zero_edges, mask_sparse, predict_all_sparse, add_self_loop
+from src.modules.utils import sample_zero_edges, mask_sparse, predict_all_sparse, add_self_loop
 from spektral.layers import GATConv, DiffPool
 
 
@@ -37,7 +37,7 @@ class GraphRNN(m.Model):
 
 class GAHRT_Outer_Probabilistic(m.Model):
     def __init__(self, nodes_features_dim, relations_features_dim, **kwargs):
-        super(GAHRT_Outer_Deterministic, self).__init__(**kwargs)
+        super(GAHRT_Outer_Probabilistic, self).__init__(**kwargs)
         self.encoder = layers.RGHAT(nodes_features_dim, relations_features_dim)
         self.decoder = layers.TrippletDecoder(False)
 
@@ -161,16 +161,17 @@ class TensorDecompositionModel(m.Model):
 
 
 class Bilinear(m.Model):
-    def __init__(self, hidden, use_mask=False, **kwargs):
+    def __init__(self, hidden, activation="relu", use_mask=False, **kwargs):
         super(Bilinear, self).__init__(**kwargs)
         self.hidden = hidden
         self.use_mask = use_mask
+        self.activation = activation
 
     def build(self, input_shape):
-        self.bilinear = layers.Bilinear(self.hidden)
+        self.bilinear = layers.Bilinear(self.hidden, self.activation)
         if self.use_mask:
             self.bilinear_mask = layers.Bilinear(self.hidden)
-        self.regularizer = losses.SparsityRegularizerLayer(0.5)
+        # self.regularizer = losses.SparsityRegularizerLayer(0.5)
 
     def call(self, inputs, **kwargs):
         X, A = self.bilinear(inputs)
@@ -178,7 +179,7 @@ class Bilinear(m.Model):
             X_mask, A_mask = self.bilinear_mask(inputs)
             A = tf.math.multiply(A, A_mask)
         A_flat = tf.reshape(A, [-1])
-        #self.add_loss(self.regularizer(A_flat))
+        # self.add_loss(self.regularizer(A_flat))
         return X, A
 
 
@@ -568,48 +569,109 @@ class GAT_Inner_spektral_dense(m.Model):
 
 class GAT_BIL_spektral(m.Model):
     def __init__(self, channels=10,
-                 attn_heads=1,
-                 concat_heads=True,
-                 dropout_rate=0.5, **kwargs):
-        super(GAT_BIL_spektral, self).__init__()
-        self.gat = GATConv(channels=10,
-                           attn_heads=10,
-                           concat_heads=True,
-                           dropout_rate=0.5, **kwargs)
-        self.bil_w = layers.BilinearDecoderSparse("relu")
-        self.bil_mask = layers.BilinearDecoderSparse("sigmoid")
-
-    def call(self, inputs, training=None, mask=None):
-        x, a = inputs
-        x = self.gat(inputs)
-        _, a_w = self.bil_w([x, a])
-        _, a_mask = self.bil_mask([x, a])
-        a_final_values = tf.math.multiply(a_w.values, a_mask.values)
-        a_final = tf.sparse.SparseTensor(a_w.indices, a_final_values, a_w.shape)
-        return x, a_final
-
-
-class GAT_BIL_spektral_dense(m.Model):
-    def __init__(self, channels=10,
                  attn_heads=10,
-                 concat_heads=True,
+                 concat_heads=False,
                  dropout_rate=0.5,
+                 output_activation="relu",
+                 use_mask=False,
+                 sparsity=0.,
                  **kwargs):
-        super(GAT_BIL_spektral_dense, self).__init__()
-        self.gat = GATConv(channels=10,
-                           attn_heads=10,
-                           concat_heads=False,
-                           dropout_rate=dropout_rate, **kwargs)
-        self.bil_w = layers.BilinearDecoderDense(activation=None)
-        # self.bil_mask = layers.BilinearDecoderDense("sigmoid")
+        super(GAT_BIL_spektral, self).__init__()
+
+        self.channles = channels
+        self.attn_heads = attn_heads
+        self.concat_heads = concat_heads
+        self.dropout_rate = dropout_rate
+        self.output_activation = output_activation
+        self.use_mask = use_mask
+        self.sparsity = sparsity
+
+        self.gat = GATConv(channels=self.channles,
+                           attn_heads=self.attn_heads,
+                           concat_heads=self.concat_heads,
+                           dropout_rate=self.dropout_rate,
+                           add_self_loop=False,
+                           **kwargs)
+        self.bil_w = layers.BilinearDecoderSparse(self.output_activation)
+        # self.bil_mask = layers.BilinearDecoderSparse("sigmoid")
 
     def call(self, inputs, training=None, mask=None):
         x, a = inputs
         x = self.gat(inputs)
         _, a_w = self.bil_w([x, a])
         # _, a_mask = self.bil_mask([x, a])
-        # a_final = tf.math.multiply(a_w, a_mask)
+        # a_final_values = tf.math.multiply(a_w.values, a_mask.values)
+        # a_final = tf.sparse.SparseTensor(a_w.indices, a_final_values, a_w.shape)
         return x, a_w
+
+
+class GAT_BIL_spektral_dense(m.Model):
+    def __init__(self, channels=10,
+                 attn_heads=10,
+                 concat_heads=True,
+                 dropout_rate=0.60,
+                 return_attn_coef=False,
+                 output_activation="relu",
+                 use_mask=False,
+                 sparsity=0.,
+                 **kwargs):
+        super(GAT_BIL_spektral_dense, self).__init__()
+        self.channles = channels
+        self.attn_heads = attn_heads
+        self.concat_heads = concat_heads
+        self.dropout_rate = dropout_rate
+        self.return_attn_coef = return_attn_coef,
+        self.output_activation = output_activation
+        self.use_mask = use_mask
+        self.sparsity = sparsity
+
+        self.gat = GATConv(channels=self.channles,
+                           attn_heads=self.attn_heads,
+                           concat_heads=self.concat_heads,
+                           dropout_rate=self.dropout_rate,
+                           add_self_loop=False,
+                           return_attn_coef=self.return_attn_coef,
+                           **kwargs)
+        self.gat_bin = GATConv(channels=self.channles,
+                           attn_heads=self.attn_heads,
+                           concat_heads=self.concat_heads,
+                           dropout_rate=self.dropout_rate,
+                           add_self_loop=False,
+                           return_attn_coef=self.return_attn_coef,
+                           **kwargs)
+        self.bil_w = layers.BilinearDecoderDense(activation=self.output_activation)
+        if self.use_mask:
+            self.bil_mask = layers.BilinearDecoderDense("sigmoid")
+
+    def call(self, inputs, training=None, mask=None):
+        x, a = inputs
+        zero_diag = tf.linalg.diag(tf.ones(a.shape[0]))
+        zero_diag = tf.ones(a.shape) - zero_diag
+        if self.return_attn_coef:
+            xw, attn = self.gat(inputs)
+            xb, attnb = self.gat_bin(inputs)
+        else:
+            xw = self.gat(inputs)
+        _, a_w = self.bil_w([xw, a])
+        a_w *= zero_diag
+        if self.sparsity:
+            self.add_loss(losses.SparsityRegularizerLayer(self.sparsity)(a_w))
+        if self.use_mask:
+            _, a_mask = self.bil_mask([xb, a])
+            a_mask *= zero_diag
+            mask = tf.where(a_mask > 0.5, 1.0, 0.0)
+            if self.sparsity:
+                self.add_loss(losses.SparsityRegularizerLayer(self.sparsity)(a_mask))
+            #a_final = tf.math.multiply(a_w, mask)
+            if self.return_attn_coef:
+                return xw, a_w, a_mask, attn
+            else:
+                return xw, a_w, a_mask
+        else:
+            if self.return_attn_coef:
+                return xw, a_w, attn
+            else:
+                return xw, a_w
 
 
 class GraphSamplerSparse(tf.keras.models.Model):
@@ -787,7 +849,7 @@ if __name__ == "__main__":
         sparse = True
         inputs = [X, R]
     elif model == "ntn":
-        model = NTN_Model(5)
+        model = NTN(5)
         r = None
         sparse = True
         inputs = [X, R]
