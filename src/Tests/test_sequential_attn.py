@@ -1,6 +1,10 @@
 import tensorflow as tf
 from tensorflow.keras.layers import LSTM
 import tensorflow.keras as k
+from src.modules.models import GAT_BIL_spektral_dense
+from spektral.data.loaders import BatchLoader
+from spektral.data.dataset import Dataset
+from tensorflow_addons.layers import MultiHeadAttention
 from spektral.data.graph import Graph
 from spektral.layers.convolutional import GATConv
 import numpy as np
@@ -23,7 +27,7 @@ f_dim = 2
 t = 40
 pos = _get_positional_encoding_matrix(t, 2)
 # drift = np.random.uniform(0, 1, size=(n_nodes, 2))
-drift = np.zeros(shape=(n_nodes, f_dim))
+drift = np.zeros(shape=(n_nodes, f_dim)) + 0.001
 X0 = np.zeros(shape=(n_nodes, f_dim))
 trajectories = np.empty(shape=(t, n_nodes, f_dim * 2))
 trajectories[0, :, :2] = X0
@@ -56,14 +60,14 @@ for n in range(n_nodes):
     nodes_trajectories[n, :, 2:] = pos
 
 gat = GATConv(channels=2, attn_heads=1, concat_heads=False, add_self_loops=False)
-o = k.layers.Dense(2, "tanh")
+#o = k.layers.Dense(2, "tanh")
 optimizer = k.optimizers.Adam(0.001)
 l = k.losses.MeanSquaredError()
 loss_hist = []
 for i in range(1000):
     with tf.GradientTape() as tape:
         X = gat([nodes_trajectories, nodes_lower_adj])
-        X = o(X)
+        #X = o(X)
         loss = l(nodes_trajectories[:, :, :2], X)
         loss_hist.append(loss)
         print(f"loss {loss}")
@@ -97,5 +101,6 @@ axes_l[1].plot(loss_hist)
 axes[2].set_title("LSTM Predictions")
 for i in range(n_nodes):
     axes[2].plot(X[i, :, 0], X[i, :, 1])
+plt.tight_layout()
 
 plt.show()
