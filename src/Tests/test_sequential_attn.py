@@ -9,7 +9,7 @@ from spektral.data.graph import Graph
 from spektral.layers.convolutional import GATConv
 import numpy as np
 import matplotlib.pyplot as plt
-
+import tqdm
 
 def _get_positional_encoding_matrix(max_len, d_emb):
     pos_enc = np.array([
@@ -67,10 +67,11 @@ gat = GATConv(channels=2, attn_heads=1, concat_heads=False, add_self_loops=False
 optimizer = k.optimizers.RMSprop(0.001)
 l = k.losses.MeanSquaredError()
 loss_hist = []
+
+
 for i in range(1000):
     with tf.GradientTape() as tape:
         X = gat([nodes_trajectories[:, :-1, :], nodes_lower_adj[:, :-1, :-1]])
-        # X = o(X)
         loss = l(nodes_trajectories[:, 1:, :2], X)
         loss_hist.append(loss)
         print(f"loss {loss}")
@@ -84,7 +85,7 @@ axes[1].set_title("Gat Prediction")
 for i in range(n_nodes):
     axes[1].plot(X[i, :, 0], X[i, :, 1])
 
-i = k.Input(shape=(t-1, f_dim * 2), batch_size=n_nodes)
+i = k.Input(shape=(None, f_dim * 2), batch_size=n_nodes)
 lstm = LSTM(10, return_sequences=True)(i)
 o = k.layers.Dense(2)(lstm)
 lstm_model = k.models.Model(i, o)
@@ -94,6 +95,8 @@ for i in range(1000):
     with tf.GradientTape() as tape:
         X = lstm_model(nodes_trajectories[:, :-1, :])
         loss = l(nodes_trajectories[:, 1:, :2], X)
+        #X = lstm_model(nodes_trajectories)
+        #loss = l(nodes_trajectories[:, :, :2], X)
         loss_hist.append(loss)
         print(f"loss {loss}")
     gradients = tape.gradient(loss, lstm_model.trainable_weights)
