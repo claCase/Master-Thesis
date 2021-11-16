@@ -27,9 +27,10 @@ f_dim = 2
 t = 40
 pos = _get_positional_encoding_matrix(t, 2)
 # drift = np.random.uniform(0, 1, size=(n_nodes, 2))
-drift = np.zeros(shape=(n_nodes, f_dim)) + 0.001
+d = 0.
+drift = np.zeros(shape=(n_nodes, f_dim)) + d
 X0 = np.zeros(shape=(n_nodes, f_dim))
-trajectories = np.empty(shape=(t, n_nodes, f_dim * 2))
+trajectories = np.zeros(shape=(t, n_nodes, f_dim * 2))
 trajectories[0, :, :2] = X0
 lower_adj = np.tril(np.ones(shape=(t, t)))
 n_prev = 30
@@ -39,9 +40,11 @@ lower_adj = lower_adj - sub_lower
 nodes_lower_adj = np.asarray([lower_adj] * n_nodes)
 
 for i in range(1, t - 1):
-    update = np.random.normal(loc=drift, scale=0.1)
+    update = np.random.normal(loc=drift, scale=0.5)
+    # update = np.random.lognormal(mean=drift, sigma=0.1)
     X_prime = trajectories[i - 1, :, :2] + update
     trajectories[i, :, :2] = X_prime
+    print(trajectories[i, :10, :])
 
 nodes_trajectories = np.swapaxes(trajectories, 0, 1)
 
@@ -60,15 +63,15 @@ for n in range(n_nodes):
     nodes_trajectories[n, :, 2:] = pos
 
 gat = GATConv(channels=2, attn_heads=1, concat_heads=False, add_self_loops=False)
-#o = k.layers.Dense(2, "tanh")
-optimizer = k.optimizers.Adam(0.001)
+# o = k.layers.Dense(2, "tanh")
+optimizer = k.optimizers.RMSprop(0.001)
 l = k.losses.MeanSquaredError()
 loss_hist = []
 for i in range(1000):
     with tf.GradientTape() as tape:
-        X = gat([nodes_trajectories, nodes_lower_adj])
-        #X = o(X)
-        loss = l(nodes_trajectories[:, :, :2], X)
+        X = gat([nodes_trajectories[:, :-1, :], nodes_lower_adj[:, :-1, :-1]])
+        # X = o(X)
+        loss = l(nodes_trajectories[:, 1:, :2], X)
         loss_hist.append(loss)
         print(f"loss {loss}")
     gradients = tape.gradient(loss, gat.trainable_weights)
@@ -81,16 +84,16 @@ axes[1].set_title("Gat Prediction")
 for i in range(n_nodes):
     axes[1].plot(X[i, :, 0], X[i, :, 1])
 
-i = k.Input(shape=(t, f_dim * 2), batch_size=n_nodes)
+i = k.Input(shape=(t-1, f_dim * 2), batch_size=n_nodes)
 lstm = LSTM(10, return_sequences=True)(i)
 o = k.layers.Dense(2)(lstm)
 lstm_model = k.models.Model(i, o)
 
 loss_hist = []
-for i in range(300):
+for i in range(1000):
     with tf.GradientTape() as tape:
-        X = lstm_model(nodes_trajectories)
-        loss = l(nodes_trajectories[:, :, :2], X)
+        X = lstm_model(nodes_trajectories[:, :-1, :])
+        loss = l(nodes_trajectories[:, 1:, :2], X)
         loss_hist.append(loss)
         print(f"loss {loss}")
     gradients = tape.gradient(loss, lstm_model.trainable_weights)
