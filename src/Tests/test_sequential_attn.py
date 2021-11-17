@@ -1,10 +1,6 @@
 import tensorflow as tf
 from tensorflow.keras.layers import LSTM
 import tensorflow.keras as k
-from src.modules.models import GAT_BIL_spektral_dense
-from spektral.data.loaders import BatchLoader
-from spektral.data.dataset import Dataset
-from tensorflow_addons.layers import MultiHeadAttention
 from spektral.data.graph import Graph
 from spektral.layers.convolutional import GATConv
 import numpy as np
@@ -44,10 +40,8 @@ nodes_lower_adj = generate_list_lower_triang(t, lags)
 
 for i in range(1, t - 1):
     update = np.random.normal(loc=drift, scale=0.5)
-    # update = np.random.lognormal(mean=drift, sigma=0.1)
     X_prime = trajectories[i - 1, :, :2] + update
     trajectories[i, :, :2] = X_prime
-    #print(trajectories[i, :10, :])
 
 nodes_trajectories = np.swapaxes(trajectories, 0, 1)
 
