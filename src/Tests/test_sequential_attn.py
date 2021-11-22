@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tensorflow.keras.layers import LSTM
+from tensorflow.keras.layers import LSTM, TimeDistributed
 import tensorflow.keras as k
 from spektral.data.graph import Graph
 from spektral.layers.convolutional import GATConv
@@ -19,24 +19,24 @@ def _get_positional_encoding_matrix(max_len, d_emb):
     return pos_enc
 
 
-def generate_list_lower_triang(t, lag):
+def generate_list_lower_triang(batch, t, lag):
     lower_adj = np.tril(np.ones(shape=(t, t)))
     prev = np.zeros(shape=(lag, t))
     sub_lower = np.vstack([prev, lower_adj])[:-lag]
     lower_adj = lower_adj - sub_lower
-    return np.asarray([lower_adj] * n_nodes)
+    return np.asarray([lower_adj] * batch)
 
 
-n_nodes = 50
+n_nodes = 150
 f_dim = 2
-t = 40
+t = 140
 pos = _get_positional_encoding_matrix(t, f_dim)
 # drift = np.random.uniform(0, 1, size=(n_nodes, 2))
 d = 0.
 drift = np.zeros(shape=(n_nodes, f_dim)) + d
 trajectories = np.zeros(shape=(t, n_nodes, f_dim * 2))
-lags = 5
-nodes_lower_adj = generate_list_lower_triang(t, lags)
+lags = 15
+nodes_lower_adj = generate_list_lower_triang(n_nodes, t, lags)
 
 for i in range(1, t - 1):
     update = np.random.normal(loc=drift, scale=0.5)
@@ -46,10 +46,10 @@ for i in range(1, t - 1):
 nodes_trajectories = np.swapaxes(trajectories, 0, 1)
 
 fig, axes = plt.subplots(3, 1)
-fig_l, axes_l = plt.subplots(2, 1)
+fig_l, axes_l = plt.subplots()
 
 for i in range(n_nodes):
-    axes[0].plot(nodes_trajectories[i, :, 0], nodes_trajectories[i, :, 1])
+    axes[0].plot(nodes_trajectories[i, 1:-1, 0], nodes_trajectories[i, 1:-1, 1])
 axes[0].set_title("True Trajectories")
 
 g_list = []
@@ -59,8 +59,8 @@ for i in range(n_nodes):
 for n in range(n_nodes):
     nodes_trajectories[n, :, 2:] = pos
 
-gat = GATConv(channels=2, attn_heads=1, dropout_rate=0.5, concat_heads=False, add_self_loops=False)
-# o = k.layers.Dense(2, "tanh")
+gat = GATConv(channels=10, attn_heads=2, dropout_rate=0.5, concat_heads=False, add_self_loops=False)
+o = k.layers.Dense(2, None)
 optimizer = k.optimizers.RMSprop(0.001)
 l = k.losses.MeanSquaredError()
 loss_hist = []
@@ -70,6 +70,7 @@ proc = tqdm.tqdm(total=epochs, position=0, leave=False, desc="Training GAT")
 for i in range(epochs):
     with tf.GradientTape() as tape:
         X = gat([nodes_trajectories[:, :-1, :], nodes_lower_adj[:, :-1, :-1]])
+        X = o(X)
         loss = l(nodes_trajectories[:, 1:, :2], X)
         loss_hist.append(loss)
     gradients = tape.gradient(loss, gat.trainable_weights)
@@ -77,8 +78,8 @@ for i in range(epochs):
     proc.update(1)
 proc.close()
 
-axes_l[0].set_title("GAT Loss History")
-axes_l[0].plot(loss_hist)
+axes_l.set_title("Loss History")
+h1, = axes_l.plot(loss_hist)
 
 axes[1].set_title("Gat Prediction")
 for i in range(n_nodes):
@@ -86,12 +87,13 @@ for i in range(n_nodes):
 
 i = k.Input(shape=(None, f_dim * 2), batch_size=n_nodes)
 lstm = LSTM(10, return_sequences=True, dropout=0.5)(i)
-o = k.layers.Dense(2)(lstm)
+o = TimeDistributed(k.layers.Dense(2))(lstm)
 lstm_model = k.models.Model(i, o)
 
+optimizer = k.optimizers.RMSprop(0.001)
 proc = tqdm.tqdm(total=epochs,  position=0, leave=False, desc="Training LSTM")
 loss_hist = []
-for i in range(1000):
+for i in range(epochs):
     with tf.GradientTape() as tape:
         X = lstm_model(nodes_trajectories[:, :-1, :])
         loss = l(nodes_trajectories[:, 1:, :2], X)
@@ -102,8 +104,8 @@ for i in range(1000):
     optimizer.apply_gradients(zip(gradients, lstm_model.trainable_weights))
     proc.update(1)
 proc.close()
-axes_l[1].set_title("LSTM Loss History")
-axes_l[1].plot(loss_hist)
+h2, = axes_l.plot(loss_hist)
+axes_l.legend([h1, h2], ["Gat loss", "LSTM Loss"], loc='upper right', shadow=True)
 axes[2].set_title("LSTM Predictions")
 for i in range(n_nodes):
     axes[2].plot(X[i, :, 0], X[i, :, 1])
