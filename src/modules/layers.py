@@ -1242,23 +1242,6 @@ class Time2Vec(tf.keras.layers.Layer):
         return input_shape[0], input_shape[1] * (self.k + 1)
 
 
-if __name__ == "__main__":
-    nodes = 20
-    ft = 10
-    r = 15
-
-    A = make_data(1, 15, 20)
-    R = tf.Variable(np.random.normal(size=(r, ft)), dtype=tf.float32)
-    X = tf.Variable(np.random.normal(size=(nodes, ft)), dtype=tf.float32)
-
-    rghat = RGHAT(15, 15, "additive", 0.5)
-    A0 = tf.sparse.slice(A, (0, 0, 0, 0), (1, r, nodes, nodes))
-    A0_dense = tf.sparse.to_dense(A0)
-    A0_squeeze = tf.squeeze(A0_dense, axis=0)
-    A0_sparse = tf.sparse.from_dense(A0_squeeze)
-    new_emb, R, A = rghat([X, R, A0_sparse])
-    # print(new_emb)
-
 
 class RGAT(l.Layer):
     def __init__(self,
@@ -1398,3 +1381,22 @@ class KgatScoring(l.Layer):
         score_tanh = tf.nn.tanh(score2 + r_emb)
         score = tf.einsum("ij,ij->i", score1, score_tanh)
         return score
+
+
+if __name__ == "__main__":
+    nodes = 20
+    ft = 10
+    r = 15
+
+    A = make_data(1, 15, 20)
+    R = tf.Variable(np.random.normal(size=(r, ft)), dtype=tf.float32)
+    X = tf.Variable(np.random.normal(size=(nodes, ft)), dtype=tf.float32)
+
+    rghat = RGHAT(15, 15, "additive", 0.5)
+    A0 = tf.sparse.slice(A, (0, 0, 0, 0), (1, r, nodes, nodes))
+    A0_dense = tf.sparse.to_dense(A0)
+    A0_squeeze = tf.squeeze(A0_dense, axis=0)
+    A0_sparse = tf.sparse.from_dense(A0_squeeze)
+    new_emb, R, A = rghat([X, R, A0_sparse])
+    # print(new_emb)
+
