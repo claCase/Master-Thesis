@@ -92,10 +92,13 @@ class Bilinear(l.Layer):
         if self.activation is not None:
             A = activations.get(self.activation)(A)
         return self.X, A'''
-    def __init__(self, hidden_dim=5, activation=None, **kwargs):
+
+    def __init__(self, hidden_dim=5, activation=None, dropout_rate=0.5, qr=True, **kwargs):
         super(Bilinear, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
         self.activation = activation
+        self.dropout_rate = dropout_rate
+        self.qr = qr
         self.initializer = tf.keras.initializers.GlorotNormal()
 
     def build(self, input_shape):
@@ -105,17 +108,30 @@ class Bilinear(l.Layer):
         self.X = tf.Variable(
             initial_value=self.initializer(shape=(input_shape[0], self.hidden_dim))
         )
+        self.dense = tf.keras.layers.Dense(self.hidden_dim)
+        self.act = tf.keras.layers.LeakyReLU(alpha=0.3)
+        if self.dropout_rate:
+            self.dropout = tf.keras.layers.Dropout(self.dropout_rate)
 
     def call(self, inputs, **kwargs):
-        Q, W = tf.linalg.qr(self.X, full_matrices=False)
-        Z = tf.matmul(tf.matmul(W, self.R), W, transpose_b=True)
-        A = tf.matmul(tf.matmul(Q, Z), Q, transpose_b=True)
-        '''x_left = tf.matmul(self.X, self.R)
-        A = tf.matmul(x_left, x_left, transpose_b=True)
-        '''
+        if self.qr:
+            Q, W = tf.linalg.qr(self.X, full_matrices=False)
+            Z = tf.matmul(tf.matmul(W, self.R), W, transpose_b=True)
+            if self.dropout_rate:
+                Z = self.dropout(Z)
+            A = tf.matmul(tf.matmul(Q, Z), Q, transpose_b=True)
+        else:
+            if self.dropout_rate:
+                X = self.dropout(self.X)
+            x_left = tf.matmul(X, self.R)
+            A = tf.matmul(x_left, X, transpose_b=True)
+
         A = activations.get(self.activation)(A)
-        #self.add_loss(tf.matmul(self.Q, self.Q, transpose_b=True) - tf.eye(self.Q.shape[0]))
-        return tf.matmul(Q, W), A
+        # self.add_loss(tf.matmul(self.Q, self.Q, transpose_b=True) - tf.eye(self.Q.shape[0]))
+        if self.qr:
+            return tf.matmul(Q, W), A
+        else:
+            return self.X, A
 
 
 class BilinearSparse(l.Layer):
@@ -482,7 +498,7 @@ class NTN(l.Layer):
     https://proceedings.neurips.cc/paper/2013/file/b337e84de8752b27eda3a12363109e80-Paper.pdf
     """
 
-    def __init__(self, activation="tanh", output_activation=None, k=5, **kwargs):
+    def __init__(self, activation="relu", output_activation="relu", k=5, **kwargs):
         """
         Parameters:
             activation: type of activation to be used
@@ -498,46 +514,30 @@ class NTN(l.Layer):
         self.initializer = initializers.GlorotNormal()
         # Relation Specific Parameters
         r = A_shape[0]
-        for _ in range(A_shape[0]):
-            self.V1r = tf.Variable(initial_value=self.initializer(shape=(r, X_shape[-1], self.k)))
-            self.V2r = tf.Variable(initial_value=self.initializer(shape=(r, X_shape[-1], self.k)))
-            self.ur = tf.Variable(initial_value=self.initializer(shape=(r, self.k, 1)))
-            self.br = tf.Variable(initial_value=self.initializer(shape=(r, self.k,)))
-            self.Wr = tf.Variable(initial_value=self.initializer(shape=(r, X_shape[-1], X_shape[-1], self.k)))
+        self.V1r = tf.Variable(initial_value=self.initializer(shape=(r, X_shape[-1], self.k)))
+        self.V2r = tf.Variable(initial_value=self.initializer(shape=(r, X_shape[-1], self.k)))
+        self.ur = tf.Variable(initial_value=self.initializer(shape=(r, self.k, 1)))
+        self.br = tf.Variable(initial_value=self.initializer(shape=(r, self.k,)))
+        self.Wr = tf.Variable(initial_value=self.initializer(shape=(r, X_shape[-1], X_shape[-1], self.k)))
 
     def call(self, inputs, **kwargs):
         X, A = inputs
+        if isinstance(A, tf.Tensor):
+            A = tf.sparse.from_dense(A)
         return self.ntn(X, A)
 
-    '''def ntn(self, X, A: tf.sparse.SparseTensor):
-        e1 = tf.gather(X, A.indices[:, 1])
-        e2 = tf.gather(X, A.indices[:, 2])
-        # Relational specific parameters
-        wr = tf.gather(self.Wr, A.indices[:, 0])
-        ur = tf.gather(self.ur, A.indices[:, 0])
-        br = tf.gather(self.br, A.indices[:, 0])
-        v1 = tf.gather(self.V1r, A.indices[:, 0])
-        v2 = tf.gather(self.V2r, A.indices[:, 0])
-        bilinear = tf.einsum("ni,nijk->njk", e1, wr)
-        bilinear = tf.einsum("njk,nj->nk", bilinear, e2)
-        v1 = tf.einsum("nd,ndk->nk", e1, v1)  # nxd, nxdxk -> nxk
-        v2 = tf.einsum("nd,ndk->nk", e2, v2)  # nxd, nxdxk -> nxk
-        vt = v1 + v2  # nxk+nxk -> nxk
-        activated = self.activation(bilinear + vt + br)  # nxk
-        score = tf.einsum("nk,nkj->nj", activated, ur)  # nxk,nxkx1 -> nx1
-        score = tf.squeeze(score)
-        A_score = tf.sparse.SparseTensor(A.indices, score, A.shape)
-        return X, A_score'''
     def ntn(self, X, A):
         a_pred = tf.sparse.from_dense(tf.zeros(shape=A.shape))
         for i in range(A.shape[0]):
-            Ar = tf.sparse.reduce_sum(tf.sparse.slice(A, (i,0,0), (1,A.shape[1], A.shape[2])), 0, output_is_sparse=True)
+            Ar = tf.sparse.reduce_sum(tf.sparse.slice(A, (i, 0, 0), (1, A.shape[1], A.shape[2])), 0,
+                                      output_is_sparse=True)
             wi = self.Wr[i]
             ui = self.ur[i]
             bi = self.br[i]
             v1i = self.V1r[i]
             v2i = self.V2r[i]
-            i, j, k = Ar.indices[:,0], Ar.indices[:,1], tf.expand_dims(tf.ones(len(Ar.indices), dtype=tf.int64)*int(i), -1)
+            i, j, k = Ar.indices[:, 0], Ar.indices[:, 1], tf.expand_dims(
+                tf.ones(len(Ar.indices), dtype=tf.int64) * int(i), -1)
             e1 = tf.gather(X, i)
             e2 = tf.gather(X, j)
             bilinear = tf.einsum("ij,jnk->ink", e1, wi)
@@ -549,10 +549,11 @@ class NTN(l.Layer):
             score = tf.einsum("ik,kj->ij", activated, ui)
             score = tf.squeeze(score)
             score = self.output_activation(score)
-            i, j = tf.expand_dims(i, -1), tf.expand_dims(j,-1)
-            indices = tf.concat([k,i,j], -1)
+            i, j = tf.expand_dims(i, -1), tf.expand_dims(j, -1)
+            indices = tf.concat([k, i, j], -1)
             a = tf.sparse.SparseTensor(indices, score, A.shape)
             a_pred = tf.sparse.add(a_pred, a)
+        a_pred = tf.sparse.to_dense(a_pred)
         return X, a_pred
 
 
@@ -1214,6 +1215,33 @@ def stable_softmax_3d(attention, A: tf.sparse.SparseTensor):
     return expz
 
 
+class Time2Vec(tf.keras.layers.Layer):
+    def __init__(self, kernel_size=1):
+        super(Time2Vec, self).__init__(trainable=True, name='Time2VecLayer')
+        self.k = kernel_size
+
+    def build(self, input_shape):
+        # trend
+        self.wb = self.add_weight(name='wb', shape=(input_shape[1],), initializer='uniform', trainable=True)
+        self.bb = self.add_weight(name='bb', shape=(input_shape[1],), initializer='uniform', trainable=True)
+        # periodic
+        self.wa = self.add_weight(name='wa', shape=(1, input_shape[1], self.k), initializer='uniform', trainable=True)
+        self.ba = self.add_weight(name='ba', shape=(1, input_shape[1], self.k), initializer='uniform', trainable=True)
+        super(Time2Vec, self).build(input_shape)
+
+    def call(self, inputs, **kwargs):
+        bias = self.wb * inputs + self.bb
+        dp = k.dot(inputs, self.wa) + self.ba
+        wgts = k.sin(dp)  # or K.cos(.)
+
+        ret = k.concatenate([k.expand_dims(bias, -1), wgts], -1)
+        ret = k.reshape(ret, (-1, inputs.shape[1] * (self.k + 1)))
+        return ret
+
+    def compute_output_shape(self, input_shape):
+        return input_shape[0], input_shape[1] * (self.k + 1)
+
+
 if __name__ == "__main__":
     nodes = 20
     ft = 10
@@ -1230,3 +1258,143 @@ if __name__ == "__main__":
     A0_sparse = tf.sparse.from_dense(A0_squeeze)
     new_emb, R, A = rghat([X, R, A0_sparse])
     # print(new_emb)
+
+
+class RGAT(l.Layer):
+    def __init__(self,
+                 hidden_dim=10,
+                 input_transform_activation=None,
+                 scoring_activation="sigmoid",
+                 attention_scoring_type="bilinear",
+                 ego_aggregation_type="bi_interaction",
+                 **kwargs):
+        super(RGAT, self).__init__(**kwargs)
+        self.hidden_dim = hidden_dim
+        self.input_transform_activation = input_transform_activation
+        self.scoring_activation = scoring_activation
+        self.ego_aggregation_type = ego_aggregation_type
+        self.attention_scoring_type = attention_scoring_type
+
+        self.x_emb = l.Dense(self.hidden_dim, self.input_transform_activation)
+        self.r_embed = l.Dense(self.hidden_dim, self.input_transform_activation)
+
+        if self.attention_scoring_type == "bilinear":
+            self.scoring = BilinearScoring(self.scoring_activation)
+        elif self.attention_scoring_type == "linear":
+            self.scoring = LinearScoring(self.scoring_activation)
+        elif self.attention_scoring_type == "kgat":
+            self.scoring = KgatScoring()
+
+    def build(self, input_shape):
+        x, r, a = input_shape
+        # map inputs to embeddings
+        x1 = self.x_emb(x)
+        r1 = self.r_embed(r)
+        # get embeddings scores
+        scores = self.scoring(x1, r1, a)
+        # get normalized adj scores
+        adj = self.score2softmax(scores, a)
+
+    def score2softmax(self, score, a):
+        adj = tf.sparse.SparseTensor(score, a.indices, a.shape)
+        adj = tf.sparse.to_dense(adj)
+        # fill zeros with -inf value to make softmax zero
+        mask = tf.where(adj > 0, 0, -1e10)
+        mask = tf.cast(mask, adj.dtype)
+        adj += mask
+        adj = tf.nn.softmax(adj, axis=(0, 2))
+        return adj
+
+
+class LinearScoring(l.Layer):
+    """
+    Implements a linear scoring function:
+    Formula: (x_i||x_j||r_ij).dot(W) : W € R^(2f+f_r x 1)
+    """
+
+    def __init__(self, activation="sigmoid"):
+        super(LinearScoring, self).__init__()
+        self.activation = activation
+
+    def build(self, input_shape):
+        x, r, a = input_shape
+        self.w = self.add_variable(name="linear_scoring_weight", shape=(2 * x[-1] + r[-1], 1))
+
+    def call(self, inputs, *args, **kwargs):
+        x, r, a = inputs
+        assert isinstance(a, tf.sparse.SparseTensor)
+        k, i, j = a.indices[:, 0], a.indices[:, 1], a.indices[:, 2]
+        x_source = tf.gather(x, i)
+        x_target = tf.gather(x, j)
+        r_emb = tf.gather(r, k)
+        concat = tf.concat([x_source, x_target, r_emb], -1)
+        scores = tf.matmul(concat, self.w)
+        scores = tf.reshape(scores, [-1])
+        scores = activations.get(self.activation)(scores)
+        return scores
+
+
+class BilinearScoring(l.Layer):
+    """
+    Implements a bilinear score between source-relation, target-relation and source-target nodes
+    Formula: x_i.dot(W1).dot(r_i) + x_j.dot(W2).dot(r_i) + x_i.dot(W3).dot(x_j)
+    """
+
+    def __init__(self, activation="sigmoid", regularize=False):
+        super(BilinearScoring, self).__init__()
+        self.activation = activation
+        self.regularize = regularize
+
+    def build(self, input_shape):
+        x, r, a = input_shape
+        if self.regularize:
+            regularizer = "l2"
+        else:
+            regularizer = None
+        self.x_source_r_kernel = self.add_variable(name="bilinear_source2rel", shape=(x[-1], r[-1]),
+                                                   initializer="glorot_normal", regularizer=regularizer)
+        self.x_target_r_kernel = self.add_variable(name="bilinear_target2rel", shape=(x[-1], r[-1]),
+                                                   initializer="glorot_normal", regularizer=regularizer)
+        self.x_source_target_kernel = self.add_variable(name="bilinear_source2target", shape=(x[-1], x[-1]),
+                                                        initializer="glorot_normal", regularizer=regularizer)
+
+    def call(self, inputs, *args, **kwargs):
+        x, r, a = inputs
+        assert isinstance(a, tf.sparse.SparseTensor)
+        k, i, j = a.indices[:, 0], a.indices[:, 1], a.indices[:, 2]
+        x_source = tf.gather(x, i)
+        x_target = tf.gather(x, j)
+        r_emb = tf.gather(r, k)
+        x_source2r_score = tf.einsum("ij,jk,ik->i", x_source, self.x_source_r_kernel, r_emb)
+        x_target2r_score = tf.einsum("ij,jk,ik->i", x_target, self.x_source_r_kernel, r_emb)
+        x_source2target_score = tf.einsum("ij,jk,ik->i", x_source, self.x_source_target_kernel, x_target)
+        score = x_source2r_score + x_target2r_score + x_source2target_score
+        score = activations.get(self.activation)(score)
+        return score
+
+
+class KgatScoring(l.Layer):
+    def __init__(self):
+        super(KgatScoring, self).__init__()
+        self.Wr = []
+
+    def build(self, input_shape):
+        x, r, a = input_shape
+
+        for i in range(a[0]):
+            wr = self.add_variable(f"Wr_scoring_{i}", shape=(x[-1], r[-1]))
+            self.Wr.append(wr)
+
+    def call(self, inputs, *args, **kwargs):
+        x, r, a = inputs
+        assert isinstance(a, tf.sparse.SparseTensor)
+        k, i, j = a.indices[:, 0], a.indices[:, 1], a.indices[:, 2]
+        x_source = tf.gather(x, i)
+        x_target = tf.gather(x, j)
+        r_emb = tf.gather(r, k)
+        wr = tf.gather(self.Wr, k)
+        score1 = tf.einsum("ij,ijk->ik", x_target, wr)
+        score2 = tf.einsum("ij,ijk->ik", x_source, wr)
+        score_tanh = tf.nn.tanh(score2 + r_emb)
+        score = tf.einsum("ij,ij->i", score1, score_tanh)
+        return score
