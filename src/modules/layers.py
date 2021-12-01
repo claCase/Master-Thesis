@@ -1242,14 +1242,21 @@ class Time2Vec(tf.keras.layers.Layer):
         return input_shape[0], input_shape[1] * (self.k + 1)
 
 
-
 class RGAT(l.Layer):
+    """
+    Learning Attention-based Embeddings for Relation Prediction in Knowledge Graph (ARKG)
+    Knowledge Graph Embedding using Graph Convolutional Networks with Relation-Aware Attention (AAKG)
+    KGAT - Knowledge Graph Attention Network for Recommendation (KGAT)
+    r-GAT: Relational Graph Attention Network for Multi-Relational Graphs (RGAT)
+    """
+
     def __init__(self,
                  hidden_dim=10,
                  input_transform_activation=None,
                  scoring_activation="sigmoid",
                  attention_scoring_type="bilinear",
                  ego_aggregation_type="bi_interaction",
+                 architecture="arkg",
                  **kwargs):
         super(RGAT, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
@@ -1257,6 +1264,7 @@ class RGAT(l.Layer):
         self.scoring_activation = scoring_activation
         self.ego_aggregation_type = ego_aggregation_type
         self.attention_scoring_type = attention_scoring_type
+        self.architecture = architecture
 
         self.x_emb = l.Dense(self.hidden_dim, self.input_transform_activation)
         self.r_embed = l.Dense(self.hidden_dim, self.input_transform_activation)
@@ -1268,8 +1276,12 @@ class RGAT(l.Layer):
         elif self.attention_scoring_type == "kgat":
             self.scoring = KgatScoring()
 
-    def build(self, input_shape):
-        x, r, a = input_shape
+        self.score2adj = ScoreSoftmax()
+        self.aggregate = AggregateEmbedding()
+
+    def call(self, inputs, *args, **kwargs):
+        x, r, a = inputs
+        assert isinstance(a, tf.sparse.SparseTensor)
         # map inputs to embeddings
         x1 = self.x_emb(x)
         r1 = self.r_embed(r)
@@ -1277,16 +1289,39 @@ class RGAT(l.Layer):
         scores = self.scoring(x1, r1, a)
         # get normalized adj scores
         adj = self.score2softmax(scores, a)
+        h = self.aggregate()
 
-    def score2softmax(self, score, a):
-        adj = tf.sparse.SparseTensor(score, a.indices, a.shape)
-        adj = tf.sparse.to_dense(adj)
-        # fill zeros with -inf value to make softmax zero
-        mask = tf.where(adj > 0, 0, -1e10)
-        mask = tf.cast(mask, adj.dtype)
-        adj += mask
-        adj = tf.nn.softmax(adj, axis=(0, 2))
-        return adj
+
+class AttentionBasedRelationPrediction(l.Layer):
+    def __init__(self, nodes_embedding_dim, relations_embedding_dim, edge_embedding_dim, edge_activation="relu"):
+        super(AttentionBasedRelationPrediction, self).__init__()
+        self.nodes_embedding_dim = nodes_embedding_dim
+        self.relations_embedding_dim = relations_embedding_dim
+        self.edge_embedding_dim = edge_embedding_dim
+        self.edge_activation = edge_activation
+        self.edge_embedding_func = LinearScoring(self.edge_activation, self.edge_embedding_dim)
+        self.score2adj = ScoreSoftmax()
+        self.aggregate = AggregateEmbedding()
+
+    def build(self, input_shape):
+        x, r, a = input_shape
+        self.w_e = self.add_variable("W_edge_score", shape=(self.edge_embedding_dim, 1),
+                                     initializer="glorot_normal")
+        self.w_x = self.add_variable("W_nodes_embedding", shape=(x[-1], self.nodes_embedding_dim),
+                                     initializer="glorot_normal")
+        self.w_r = self.add_variable("W_nodes_embedding", shape=(r[-1], self.relations_embedding_dim),
+                                     initializer="glorot_normal")
+
+    def call(self, inputs, *args, **kwargs):
+        x, r, a = inputs
+        x_emb = tf.matmul(x, self.w_x)
+        r_emb = tf.matmul(r, self.w_r)
+        e_emb = self.edge_embedding_func([x_emb, r_emb, a])  # Exd
+        scores = tf.matmul(e_emb, self.w_e)  # Ex1
+        scores = tf.reshape(scores, [-1])  # E
+        adj = self.score2adj([scores, a])
+        h = self.aggregate([e_emb, adj])
+        return h
 
 
 class LinearScoring(l.Layer):
@@ -1295,13 +1330,14 @@ class LinearScoring(l.Layer):
     Formula: (x_i||x_j||r_ij).dot(W) : W € R^(2f+f_r x 1)
     """
 
-    def __init__(self, activation="sigmoid"):
+    def __init__(self, activation="sigmoid", units=1):
         super(LinearScoring, self).__init__()
         self.activation = activation
+        self.units = units
 
     def build(self, input_shape):
         x, r, a = input_shape
-        self.w = self.add_variable(name="linear_scoring_weight", shape=(2 * x[-1] + r[-1], 1))
+        self.w = self.add_variable(name="linear_scoring_weight", shape=(2 * x[-1] + r[-1], self.units))
 
     def call(self, inputs, *args, **kwargs):
         x, r, a = inputs
@@ -1312,7 +1348,7 @@ class LinearScoring(l.Layer):
         r_emb = tf.gather(r, k)
         concat = tf.concat([x_source, x_target, r_emb], -1)
         scores = tf.matmul(concat, self.w)
-        scores = tf.reshape(scores, [-1])
+        scores = tf.reshape(scores, [-1, self.units])
         scores = activations.get(self.activation)(scores)
         return scores
 
@@ -1383,6 +1419,47 @@ class KgatScoring(l.Layer):
         return score
 
 
+class ScoreSoftmax(l.Layer):
+    def __init__(self):
+        super(ScoreSoftmax, self).__init__()
+
+    def call(self, inputs, *args, **kwargs):
+        score, a = inputs
+        assert isinstance(a, tf.sparse.SparseTensor) and len(score) == len(a.indices)
+        adj = tf.sparse.SparseTensor(a.indices, score, a.shape)
+        adj = tf.sparse.transpose(adj, (1, 2, 0))  # Ni X Nj x R
+        adj_reshaped = tf.sparse.reshape(adj, (a.shape[-1], -1))  # Ni x (Nj*R)
+        soft = tf.sparse.softmax(adj_reshaped)
+        soft = tf.sparse.reshape(soft, adj.shape)
+        soft = tf.sparse.transpose(soft, (2,0,1))
+        # fill zeros with -inf value to make softmax zero
+        return soft
+
+
+class AggregateEmbedding(l.Layer):
+    def __init__(self):
+        super(AggregateEmbedding, self).__init__()
+
+    def call(self, inputs, *args, **kwargs):
+        """
+        Aggregation based on 'Learning Attention-based Embeddings for Relation Prediction in Knowledge Graph'
+        Inputs:
+            x: Initial Node Embeddings of shape Nxf where N is the number of nodes and f is the hidden dimension
+            e_kij: List of vector embedding of edges e_kij from linear scoring of shape N_e x f where N_e is the number
+                   of edges and f in the hidden dimension
+            a: adjacency sparse tensor of shape R x N x N
+        """
+        e_kij, a = inputs
+        d = e_kij.shape[-1]
+        r, n, _ = tf.reduce_max(a.indices, 0) + 1
+        if isinstance(a, tf.Tensor):
+            a = tf.sparse.from_dense(a)
+        k, i, j = a.indices[:, 0], a.indices[:, 1], a.indices[:, 2]
+        h_list = tf.expand_dims(a.values, -1) * e_kij
+        h = tf.tensor_scatter_nd_add(tf.zeros((n, d), dtype=a.values.dtype), tf.expand_dims(i, -1), h_list)
+        return h
+
+
 if __name__ == "__main__":
     nodes = 20
     ft = 10
@@ -1399,4 +1476,3 @@ if __name__ == "__main__":
     A0_sparse = tf.sparse.from_dense(A0_squeeze)
     new_emb, R, A = rghat([X, R, A0_sparse])
     # print(new_emb)
-

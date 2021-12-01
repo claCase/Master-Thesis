@@ -158,3 +158,23 @@ def predict_all_sparse(A_true):
                 tot_edges, np.random.normal(size=len(tot_edges)), A_true.shape
             )
         )
+
+
+def generate_list_lower_triang(batch, t, lag):
+    lower_adj = np.tril(np.ones(shape=(t, t)))
+    prev = np.zeros(shape=(lag, t))
+    sub_lower = np.vstack([prev, lower_adj])[:-lag]
+    lower_adj = lower_adj - sub_lower
+    return np.asarray([lower_adj] * batch)
+
+
+def simmetricity(A):
+    # https://math.stackexchange.com/questions/2048817/metric-for-how-symmetric-a-matrix-is
+    if isinstance(A, tf.Tensor):
+        A = A.numpy()
+    A_sym = 0.5*(A + A.T)
+    A_anti_sym = 0.5*(A - A.T)
+    A_sym_norm = np.sum(np.power(A_sym, 2), (0,1))
+    A_anti_sym_norm = np.sum(np.power(A_anti_sym, 2), (0,1))
+    score = (A_sym_norm - A_anti_sym_norm)/(A_sym_norm + A_anti_sym_norm )
+    return score

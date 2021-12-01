@@ -51,11 +51,11 @@ def embedding_smoothness(X, A, square=True):
     if square:
         d = x1 - x2
         loss = tf.einsum("ij,ij->i", d, d)
-        return tf.reduce_sum(loss, 0)
+        return tf.sqrt(tf.reduce_sum(loss, 0))
     else:
         d = x1 - x2
         loss = tf.reduce_sum(d, 1)
-        return tf.reduce_sum(loss, 0)
+        return tf.abs(tf.reduce_sum(loss, 0))
 
 
 class SparsityRegularizerLayer(l.Layer):
