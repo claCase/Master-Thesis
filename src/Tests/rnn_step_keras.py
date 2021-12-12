@@ -1,9 +1,17 @@
 import tensorflow as tf
 
-def rnn(step_function, inputs, initial_states,
-        go_backwards=False, mask=None, constants=None,
-        unroll=False, input_length=None):
-    '''Iterates over the time dimension of a tensor.
+
+def rnn(
+    step_function,
+    inputs,
+    initial_states,
+    go_backwards=False,
+    mask=None,
+    constants=None,
+    unroll=False,
+    input_length=None,
+):
+    """Iterates over the time dimension of a tensor.
 
     # Arguments
         inputs: tensor of temporal data of shape (samples, time, ...)
@@ -40,7 +48,7 @@ def rnn(step_function, inputs, initial_states,
             at time t for sample s.
         new_states: list of tensors, latest states returned by
             the step function, of shape (samples, ...).
-    '''
+    """
     ndim = len(inputs.get_shape())
     assert ndim >= 3, "Input should be at least 3D."
     axes = [1, 0] + list(range(2, ndim))
@@ -60,7 +68,7 @@ def rnn(step_function, inputs, initial_states,
         if mask is not None:
             # Transpose not supported by bool tensor types, hence round-trip to uint8.
             mask = tf.cast(mask, tf.uint8)
-            if len(mask.get_shape()) == ndim-1:
+            if len(mask.get_shape()) == ndim - 1:
                 mask = expand_dims(mask)
             mask = tf.cast(tf.transpose(mask, axes), tf.bool)
             mask_list = tf.unpack(mask)
@@ -96,7 +104,7 @@ def rnn(step_function, inputs, initial_states,
                 successive_outputs.append(output)
                 successive_states.append(states)
 
-        else: # Mask is None
+        else:  # Mask is None
             for input in input_list:
                 output, states = step_function(input, states + constants)
                 successive_outputs.append(output)
@@ -106,29 +114,36 @@ def rnn(step_function, inputs, initial_states,
             outputs = tf.pack(successive_outputs)
             new_states = successive_states[-1]
 
-    else: # Unroll is False
+    else:  # Unroll is False
 
         if mask is not None:
-            raise NotImplementedError('Unrolled loops with masking still not implemented.')
-        else: # Mask is None
+            raise NotImplementedError(
+                "Unrolled loops with masking still not implemented."
+            )
+        else:  # Mask is None
+
             def _step(prev, input):
                 _, new_states = step_function(input, tf.unpack(prev) + constants)
                 return tf.pack(new_states)
 
-            results = tf.scan(_step,
-                              inputs,
-                              initializer=tf.pack(initial_states),
-                              swap_memory=True,
-                              name='rnn_scan',
-                              back_prop=True,
-                              parallel_iterations=10)
+            results = tf.scan(
+                _step,
+                inputs,
+                initializer=tf.pack(initial_states),
+                swap_memory=True,
+                name="rnn_scan",
+                back_prop=True,
+                parallel_iterations=10,
+            )
 
             successive_outputs = results[:, 0, :, :]
-            successive_states  = results[:, 1:, :, :]
+            successive_states = results[:, 1:, :, :]
 
             outputs = successive_outputs
             last_output = tf.reverse(successive_outputs, [True, False, False])[0, :, :]
-            new_states  = tf.reverse(successive_states, [True, False, False, False])[0, :, :, :]
+            new_states = tf.reverse(successive_states, [True, False, False, False])[
+                0, :, :, :
+            ]
 
     axes = [1, 0] + list(range(2, len(outputs.get_shape())))
     outputs = tf.transpose(outputs, axes)

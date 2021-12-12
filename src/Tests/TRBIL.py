@@ -36,7 +36,9 @@ def generate_data_block_matrix(data, sparse=True):
 def generate_synthetic_block_matrix(time, relations, nodes, sparse=True):
     rels = []
     for i in range(relations):
-        block = np.random.lognormal(size=(nodes, nodes))  # * np.random.choice((0,1),size=(nodes, nodes))
+        block = np.random.lognormal(
+            size=(nodes, nodes)
+        )  # * np.random.choice((0,1),size=(nodes, nodes))
         block = np.asarray(block, dtype=np.float32)
         rels.append(block)
     block_rels = block_diag(*rels)
@@ -53,18 +55,23 @@ def generate_synthetic_block_matrix(time, relations, nodes, sparse=True):
     for i in range(time):
         for j in range(relations):
             index += 1
-            diag_upper = np.diagflat(diag_inputs, index * nodes)[:tot_values, :tot_values]
-            diag_lower = np.diagflat(diag_inputs, -index * nodes)[:tot_values, :tot_values]
+            diag_upper = np.diagflat(diag_inputs, index * nodes)[
+                :tot_values, :tot_values
+            ]
+            diag_lower = np.diagflat(diag_inputs, -index * nodes)[
+                :tot_values, :tot_values
+            ]
             diag += diag_upper + diag_lower
     if sparse:
         return tf.sparse.from_dense(block_time)
     return block_time, diag
 
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--synthetic", action="store_true")
 parser.add_argument("--t", type=int, default=2)
-parser.add_argument("--r", type=int, default=2)
-parser.add_argument("--n", type=int, default=174)
+parser.add_argument("--r", type=int, default=5)
+parser.add_argument("--n", type=int, default=170)
 parser.add_argument("--sparse", action="store_true")
 args = parser.parse_args()
 synthetic = args.synthetic
@@ -77,8 +84,8 @@ if synthetic:
     A = block_time + diag
 else:
     with open(
-            "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
-            "rb",
+        "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
+        "rb",
     ) as file:
         data_np = pkl.load(file)
     data_sp = tf.sparse.SparseTensor(
@@ -89,28 +96,34 @@ else:
     data_slice = tf.sparse.slice(data_sp, (20, 0, 0, 0), (t, r, n, n))
     data_dense = tf.sparse.to_dense(data_slice)
     data_dense = tf.math.log(data_dense)
-    data_dense = tf.clip_by_value(data_dense, 0., 1e12)
+    data_dense = tf.clip_by_value(data_dense, 0.0, 1e12)
+
+    data_slice_test = tf.sparse.slice(data_sp, (25, 0, 0, 0), (t, r, n, n))
+    data_dense_test = tf.sparse.to_dense(data_slice)
+    data_dense_test = tf.math.log(data_dense)
+    data_dense_test = tf.clip_by_value(data_dense, 0.0, 1e12)
     block_time, diag = generate_data_block_matrix(data_dense, sparse=sparse)
+
     if sparse:
         A = tf.sparse.add(block_time, diag)
     else:
-        A = block_time + diag
+        A = block_time  # + diag
 
 if sparse:
     model = BilinearSparse(25)
 else:
-    model = Bilinear(25)
+    model = Bilinear(25, qr=True)
 
 mse = square_loss
-epochs = 1000
+epochs = 600
 tq = tqdm.tqdm(total=epochs)
 p = 0.2
 loss_hist = []
 optimizer = k.optimizers.RMSprop(0.001)
 grids = np.zeros(A.shape)
-lines = np.arange(A.shape[0]//n)*n
-grids[lines, :] = 10.
-grids[:, lines] = 10.
+lines = np.arange(A.shape[0] // n) * n
+grids[lines, :] = 10.0
+grids[:, lines] = 10.0
 plt.imshow(A + grids)
 plt.show()
 for i in range(epochs):
@@ -128,10 +141,10 @@ for i in range(epochs):
     optimizer.apply_gradients(zip(gradients, model.trainable_weights))
     tq.update(1)
 
-inner_product = tf.matmul(x, x, transpose_b=True)
+"""inner_product = tf.matmul(x, x, transpose_b=True)
 plt.imshow(inner_product)
 plt.colorbar()
-plt.show()
+plt.show()"""
 
 if sparse:
     block_time = tf.sparse.to_dense(block_time).numpy()
@@ -142,9 +155,17 @@ axs[0].set_title("Pred")
 imt = axs[1].imshow(block_time)
 axs[1].set_title("True")
 plt.subplots_adjust(bottom=0.1, right=0.8, top=0.9)
-cax = plt.axes([.8, 0.1, 0.075, 0.8])
+cax = plt.axes([0.8, 0.1, 0.075, 0.8])
 plt.colorbar(imt, cax=cax)
 plt.figure()
 plt.plot(loss_hist)
-plt.savefig("./Figures/sparse_block_loss.png")
+
+a = a.numpy().flatten()
+a_edges = a[a > 0.5]
+block_edges = block_time.flatten()
+block_edges = block_edges[block_edges > 0.5]
+plt.figure()
+plt.hist(a_edges, 100, color="red", alpha=0.5, density=True)
+plt.hist(block_edges, 100, color="blue", alpha=0.5, density=True)
+# plt.savefig("./Figures/sparse_block_loss.png")
 plt.show()
