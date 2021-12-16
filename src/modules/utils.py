@@ -107,7 +107,9 @@ def add_self_loops_data(data_sp: tf.sparse.SparseTensor):
 def add_self_loop(data: tf.sparse.SparseTensor):
     i = np.arange(data.shape[-1])
     edges = np.concatenate([i[:, None], i[:, None]], -1)
-    values = tf.math.unsorted_segment_sum(data.values, data.indices[:, 0], data.shape[-1])
+    values = tf.math.unsorted_segment_sum(
+        data.values, data.indices[:, 0], data.shape[-1]
+    )
     self_sparse = tf.sparse.SparseTensor(edges, values, data.shape)
     return tf.sparse.add(data, self_sparse)
 
@@ -172,9 +174,26 @@ def simmetricity(A):
     # https://math.stackexchange.com/questions/2048817/metric-for-how-symmetric-a-matrix-is
     if isinstance(A, tf.Tensor):
         A = A.numpy()
-    A_sym = 0.5*(A + A.T)
-    A_anti_sym = 0.5*(A - A.T)
-    A_sym_norm = np.sum(np.power(A_sym, 2), (0,1))
-    A_anti_sym_norm = np.sum(np.power(A_anti_sym, 2), (0,1))
-    score = (A_sym_norm - A_anti_sym_norm)/(A_sym_norm + A_anti_sym_norm )
+    A_sym = 0.5 * (A + A.T)
+    A_anti_sym = 0.5 * (A - A.T)
+    A_sym_norm = np.sum(np.power(A_sym, 2), (0, 1))
+    A_anti_sym_norm = np.sum(np.power(A_anti_sym, 2), (0, 1))
+    score = (A_sym_norm - A_anti_sym_norm) / (A_sym_norm + A_anti_sym_norm)
     return score
+
+
+def sum_gradients(grads_t, reduce="mean"):
+    grad_vars = [[] for _ in range(len(grads_t[0]))]
+    for t, grad_t in enumerate(grads_t):
+        for i, grad_var in enumerate(grad_t):
+            grad = tf.expand_dims(grad_var, 0)
+            grad_vars[i].append(grad)
+
+    for i, v in enumerate(grad_vars):
+        if reduce == "mean":
+            g = tf.reduce_mean(v, 0)
+        if reduce == "sum":
+            g = tf.reduce_sum(v, 0)
+        g = tf.squeeze(g,0)
+        grad_vars[i] = g
+    return grad_vars

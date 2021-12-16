@@ -72,7 +72,7 @@ class BilinearLayer(l.Layer):
 
 
 class Bilinear(l.Layer):
-    '''def __init__(self, hidden_dim=5, activation=None, **kwargs):
+    """def __init__(self, hidden_dim=5, activation=None, **kwargs):
         super(Bilinear, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
         self.activation = activation
@@ -91,9 +91,11 @@ class Bilinear(l.Layer):
         A = tf.matmul(x_left, x_left, transpose_b=True)
         if self.activation is not None:
             A = activations.get(self.activation)(A)
-        return self.X, A'''
+        return self.X, A"""
 
-    def __init__(self, hidden_dim=5, activation=None, dropout_rate=0.5, qr=True, **kwargs):
+    def __init__(
+        self, hidden_dim=5, activation=None, dropout_rate=0.5, qr=True, **kwargs
+    ):
         super(Bilinear, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
         self.activation = activation
@@ -202,11 +204,12 @@ class BilinearDecoderDense(l.Layer):
 
 
 class BilinearDecoderSparse(l.Layer):
-    def __init__(self, activation="relu", diagonal=False, **kwargs):
+    def __init__(self, activation="relu", diagonal=False, qr=False, **kwargs):
         super(BilinearDecoderSparse, self).__init__(**kwargs)
         self.initializer = initializers.GlorotNormal()
         self.diagonal = diagonal
         self.activation = activation
+        self.qr = qr
 
     def build(self, input_shape):
         X_shape, A_shape = input_shape
@@ -222,13 +225,11 @@ class BilinearDecoderSparse(l.Layer):
 
     def call(self, inputs, **kwargs):
         X, A = inputs
+        '''if self.qr:
+            Q, W = tf.linalg.qr(X, full_matrices=False)
+            Z = tf.matmul(tf.matmul(W, self.R), W, transpose_b=True)
+            A = tf.matmul(tf.matmul(Q, Z), Q, transpose_b=True)'''
         i, j = A.indices[:, 0], A.indices[:, 1]
-        """i = tf.range(A.shape[0])
-        j = tf.range(A.shape[1])
-        c = tf.stack(tf.meshgrid(i, j, indexing='ij'), axis=-1)
-        c = tf.reshape(c, (-1, 2)).numpy()
-        i = c[:,0]
-        j = c[:,1]"""
         e1 = tf.gather(X, i)
         e2 = tf.gather(X, j)
         left = tf.einsum("ij,jk->ik", e1, self.R_kernel)
@@ -236,8 +237,6 @@ class BilinearDecoderSparse(l.Layer):
         if self.activation:
             A_pred = activations.get(self.activation)(right)
         A_pred = tf.sparse.SparseTensor(A.indices, A_pred, A.shape)
-        # A_pred = tf.sparse.reorder(A_pred)
-        # A_pred = tf.sparse.to_dense(A_pred)
         return X, A_pred
 
 
@@ -398,68 +397,6 @@ class TrippletDecoderOuterSparse(l.Layer):
         return self.dec2(sparse_outer)
 
 
-class TrippletScoreFlatSparse(l.Layer):
-    def __init__(self, message_dim=0, activation="softplus"):
-        super(TrippletScoreFlatSparse, self).__init__()
-        self.initializer = initializers.GlorotNormal()
-        self.message_dim = message_dim
-        self.activation = activation
-
-    def build(self, input_shape):
-        X_shape, R_shape, A_shape = input_shape
-        if self.message_dim:
-            self.kernel_x1 = tf.Variable(
-                initial_value=self.initializer(shape=(self.message_dim, 1))
-            )
-            self.kernel_x2 = tf.Variable(
-                initial_value=self.initializer(shape=(self.message_dim, 1))
-            )
-            self.kernel_r = tf.Variable(
-                initial_value=self.initializer(shape=(self.message_dim, 1))
-            )
-        else:
-            self.kernel_x1 = tf.Variable(
-                initial_value=self.initializer(shape=(X_shape[-1]))
-            )
-            self.kernel_x2 = tf.Variable(
-                initial_value=self.initializer(shape=(X_shape[-1]))
-            )
-            self.kernel_r = tf.Variable(
-                initial_value=self.initializer(shape=(R_shape[-1]))
-            )
-        if self.message_dim:
-            self.message_s_kernel = tf.Variable(
-                initial_value=self.initializer(shape=(X_shape[-1], self.message_dim))
-            )
-            self.message_t_kernel = tf.Variable(
-                initial_value=self.initializer(shape=(X_shape[-1], self.message_dim))
-            )
-            self.message_r_kernel = tf.Variable(
-                initial_value=self.initializer(shape=(R_shape[-1], self.message_dim))
-            )
-
-    def call(self, inputs, **kwargs):
-        X, R, A = inputs
-        if self.message_dim:
-            S = tf.matmul(X, self.message_s_kernel)
-            T = tf.matmul(X, self.message_t_kernel)
-            R = tf.matmul(R, self.message_r_kernel)
-        else:
-            T = S = X
-        x1 = tf.gather(S, A.indices[:, 1])
-        x2 = tf.gather(T, A.indices[:, 2])
-        r = tf.gather(R, A.indices[:, 0])
-        x1_k = tf.matmul(x1, self.kernel_x1)
-        x2_k = tf.matmul(x2, self.kernel_x2)
-        r_k = tf.matmul(r, self.kernel_r)
-        tot = x1_k + x2_k + r_k
-        tot = tf.squeeze(tot)
-        if self.activation:
-            activations.get(self.activation)(tot)
-        A_pred = tf.sparse.SparseTensor(A.indices, tot, A.shape)
-        return X, R, A_pred
-
-
 class TensorDecompositionLayer(l.Layer):
     def __init__(self, k, **kwargs):
         super(TensorDecompositionLayer, self).__init__(**kwargs)
@@ -514,11 +451,24 @@ class NTN(l.Layer):
         self.initializer = initializers.GlorotNormal()
         # Relation Specific Parameters
         r = A_shape[0]
-        self.V1r = tf.Variable(initial_value=self.initializer(shape=(r, X_shape[-1], self.k)))
-        self.V2r = tf.Variable(initial_value=self.initializer(shape=(r, X_shape[-1], self.k)))
+        self.V1r = tf.Variable(
+            initial_value=self.initializer(shape=(r, X_shape[-1], self.k))
+        )
+        self.V2r = tf.Variable(
+            initial_value=self.initializer(shape=(r, X_shape[-1], self.k))
+        )
         self.ur = tf.Variable(initial_value=self.initializer(shape=(r, self.k, 1)))
-        self.br = tf.Variable(initial_value=self.initializer(shape=(r, self.k,)))
-        self.Wr = tf.Variable(initial_value=self.initializer(shape=(r, X_shape[-1], X_shape[-1], self.k)))
+        self.br = tf.Variable(
+            initial_value=self.initializer(
+                shape=(
+                    r,
+                    self.k,
+                )
+            )
+        )
+        self.Wr = tf.Variable(
+            initial_value=self.initializer(shape=(r, X_shape[-1], X_shape[-1], self.k))
+        )
 
     def call(self, inputs, **kwargs):
         X, A = inputs
@@ -529,15 +479,21 @@ class NTN(l.Layer):
     def ntn(self, X, A):
         a_pred = tf.sparse.from_dense(tf.zeros(shape=A.shape))
         for i in range(A.shape[0]):
-            Ar = tf.sparse.reduce_sum(tf.sparse.slice(A, (i, 0, 0), (1, A.shape[1], A.shape[2])), 0,
-                                      output_is_sparse=True)
+            Ar = tf.sparse.reduce_sum(
+                tf.sparse.slice(A, (i, 0, 0), (1, A.shape[1], A.shape[2])),
+                0,
+                output_is_sparse=True,
+            )
             wi = self.Wr[i]
             ui = self.ur[i]
             bi = self.br[i]
             v1i = self.V1r[i]
             v2i = self.V2r[i]
-            i, j, k = Ar.indices[:, 0], Ar.indices[:, 1], tf.expand_dims(
-                tf.ones(len(Ar.indices), dtype=tf.int64) * int(i), -1)
+            i, j, k = (
+                Ar.indices[:, 0],
+                Ar.indices[:, 1],
+                tf.expand_dims(tf.ones(len(Ar.indices), dtype=tf.int64) * int(i), -1),
+            )
             e1 = tf.gather(X, i)
             e2 = tf.gather(X, j)
             bilinear = tf.einsum("ij,jnk->ink", e1, wi)
@@ -564,280 +520,11 @@ class RGHAT(l.Layer):
     """
 
     def __init__(
-            self,
-            nodes_features_dim,
-            relations_features_dim,
-            heads=5,
-            embedding_combination="additive",
-            dropout_rate=None,
-            attention_activation="sigmoid",
-            include_adj_values=False,
-            message_activation=None,
-            **kwargs,
+        self,
+        **kwargs,
     ):
         super(RGHAT, self).__init__(**kwargs)
-        self.nodes_features_dim = nodes_features_dim
-        self.relations_features_dim = relations_features_dim
-        self.heads = heads
-        self.embedding_combination = embedding_combination
-        assert self.embedding_combination in [
-            "additive",
-            "multiplicative",
-            "bi-interaction",
-        ]
-        self.dropout_rate = dropout_rate
-        self.attention_activation = attention_activation
-        self.initializer = initializers.GlorotNormal()
-        self.include_adj_values = include_adj_values
-        self.message_activation = message_activation
-        assert self.message_activation in [
-            "relu",
-            "sigmoid",
-            "tanh",
-            "leaky_relu",
-            None,
-        ]
-        self.message_activation = activations.get(self.message_activation)
-
-    def build(self, input_shape):
-        """
-        Build the model parameters
-            Parameters:
-                input_shape: input shape array [X_shape, R_shape, A_shape] where X is the nodes features matrix, R is
-                             the relations features matrix and A is the adjacency tensor of size RxNxN
-        """
-        X_shape, R_shape, A_shape = input_shape
-        self.heads_variables = []
-        for _ in range(self.heads):
-            self.s_m_kernel = tf.Variable(
-                initial_value=self.initializer(
-                    shape=(X_shape[-1], self.nodes_features_dim)
-                ),
-                dtype=tf.float32,
-            )
-            self.t_m_kernel = tf.Variable(
-                initial_value=self.initializer(
-                    shape=(X_shape[-1], self.nodes_features_dim)
-                ),
-                dtype=tf.float32,
-            )
-            self.r_m_kernel = tf.Variable(
-                initial_value=self.initializer(
-                    shape=(R_shape[-1], self.relations_features_dim)
-                ),
-                dtype=tf.float32,
-            )
-            S_sr_kernel = tf.Variable(
-                initial_value=self.initializer(
-                    shape=(self.nodes_features_dim, self.nodes_features_dim)
-                ),
-                dtype=tf.float32,
-            )
-            R_sr_kernel = tf.Variable(
-                initial_value=self.initializer(
-                    shape=(self.nodes_features_dim, self.nodes_features_dim)
-                ),
-                dtype=tf.float32,
-            )
-            T_srt_kernel = tf.Variable(
-                initial_value=self.initializer(
-                    shape=(self.nodes_features_dim, self.nodes_features_dim)
-                ),
-                dtype=tf.float32,
-            )
-            SR_srt_kernel = tf.Variable(
-                initial_value=self.initializer(
-                    shape=(self.nodes_features_dim, self.nodes_features_dim)
-                ),
-                dtype=tf.float32,
-            )
-            sr_attention_kernel = tf.Variable(
-                initial_value=self.initializer(shape=(self.nodes_features_dim, 1)),
-                dtype=tf.float32,
-            )
-            srt_attention_kernel = tf.Variable(
-                initial_value=self.initializer(shape=(self.nodes_features_dim, 1)),
-                dtype=tf.float32,
-            )
-            self.heads_kernel = tf.Variable(
-                initial_value=self.initializer(shape=(1, self.heads))
-            )
-
-            self.heads_variables.append(
-                {
-                    "S_sr_kernel": S_sr_kernel,
-                    "R_sr_kernel": R_sr_kernel,
-                    "T_srt_kernel": T_srt_kernel,
-                    "SR_srt_kernel": SR_srt_kernel,
-                    "sr_attention_kernel": sr_attention_kernel,
-                    "srt_attention_kernel": srt_attention_kernel,
-                }
-            )
-
-    def source_message(self, X):
-        """
-        Linear transformation of sources to make them messages
-            Parameters:
-                X: Nodes features matrix of dimensions Nxf where N is the number of nodes and f is the feature dimension
-        """
-        f = tf.matmul(X, self.s_m_kernel)
-        if self.message_activation is None:
-            return f
-        else:
-            return self.message_activation(f)
-
-    def target_message(self, X):
-        f = tf.matmul(X, self.t_m_kernel)
-        if self.message_activation is None:
-            return f
-        else:
-            return self.message_activation(f)
-
-    def relation_message(self, R):
-        f = tf.matmul(R, self.r_m_kernel)
-        if self.message_activation is None:
-            return f
-        else:
-            return self.message_activation(f)
-
-    def additive(self, embeddings, update_embeddings):
-        """
-        Additive update of node embeddings: activation((emd + update_emb)*W) W_shape = dxd
-            Params:
-                embeddings: list of embeddings of each edge, shape Exd
-                update_embeddings: list of new embeddings of each edge, shape Exd
-        """
-        self.W = self.add_weight(
-            initializer=self.initializer,
-            shape=(self.nodes_features_dim, self.nodes_features_dim),
-            trainable=True,
-        )
-        sum_emb = embeddings + update_embeddings  # shape: Exd
-        return activations.relu(tf.matmul(sum_emb, self.W))
-
-    def multiplicative(self, embeddings, update_embeddings):
-        """
-        Multiplicative update of node embeddings: activation((emd * update_emb)*W)
-            Params:
-                    embeddings: list of embeddings of each edge, shape Exd
-                    update_embeddings: list of new embeddings of each edge, shape Exd
-        """
-        self.W = self.add_weight(
-            initializer=self.initializer,
-            shape=(self.nodes_features_dim, self.nodes_features_dim),
-            trainable=True,
-        )
-        mult_emb = embeddings * update_embeddings
-        return activations.relu(tf.matmul(mult_emb, self.W))
-
-    def bi_interaction(self, embeddings, update_embeddings):
-        """
-        Bi-interaction update of node embeddings: 0.5*[additive(emd, update_emb) + multiplicative(emb, update_emb)]
-            Params:
-                    embeddings: list of embeddings of each edge, shape Exd
-                    update_embeddings: list of new embeddings of each edge, shape Exd
-        """
-        return 0.5 * (
-                self.additive(embeddings, update_embeddings)
-                + self.multiplicative(embeddings, update_embeddings)
-        )
-
-    def call(self, inputs, **kwargs):
-        """
-        Computes new embeddins based on Relational-level attention and Entity-level attention.
-        Relational-level attention:
-            a_sr = [source_embedding||relation_embedding]*W1 : W1 shape is 2dxd
-            attention_sr = softmax(a_sr) = exp(activation(a_sr*sr_kernel))/sum_r[exp(activation(a_sr*sr_kernel))]
-            sr_kernel shape is dx1
-            W1 can be decomposed by W_s and W_r with shapes dxd, so that the multiplication becomes:
-                a_s = source_embedding * W_s
-                a_r = relation_embedding * W_r
-                a_sr = a_s + a_r
-        Entity-level attention:
-            a_srt = [a_sr||target_embedding]*W2 : W2 shape is 2dxd
-            attention_sr_t = softmax(a_srt) = exp(activation(a_srt*srt_kernel))/sum_t[exp(activation(a_srt*srt_kernel))]
-            srt_kernel shape is dx1
-            W1 can be decomposed by W_sr and W_t with shapes dxd, so that the multiplication becomes:
-                a_sr = source_embedding * W_sr
-                a_t = relation_embedding * W_t
-                a_srt = a_sr + a_t
-        """
-        X, R, A = inputs
-        message_s = self.source_message(X)
-        message_t = self.target_message(X)
-        message_r = self.relation_message(R)
-        outputs_head = []
-        edges = A.indices
-        batch = len(edges)
-        for i in range(self.heads):
-            """
-            # Relational level attention s->r
-            batch_emb_head = []
-            for b in range(len(edges)//batch):
-                star_idx = b * batch
-                if not b%(len(edges)//batch):
-                    end_idx = None
-                else:
-                    end_idx = b*(batch+1)"""
-            a_s = tf.gather(message_s, edges[:, 1])  # [star_idx:end_idx, 1])
-            a_s = tf.matmul(a_s, self.heads_variables[i]["S_sr_kernel"])
-            a_r = tf.gather(message_r, edges[:, 0])  # star_idx:end_idx, 0])
-            a_r = tf.matmul(a_r, self.heads_variables[i]["R_sr_kernel"])
-            a_sr = a_s + a_r
-            a_sr_attention = tf.matmul(
-                a_sr, self.heads_variables[i]["sr_attention_kernel"]
-            )
-            attention_sr = unsorted_segment_softmax(
-                a_sr_attention, edges[:, 0]
-            )  # star_idx:end_idx, 0])
-            if self.dropout_rate:
-                attention_sr = l.Dropout(self.dropout_rate)(attention_sr)
-
-            # Entity level attention sr->t
-            a_sr_ = tf.matmul(
-                a_sr, self.heads_variables[i]["SR_srt_kernel"]
-            )  # shape: Exd
-            a_t = tf.gather(message_t, edges[:, 2])  # star_idx:end_idx, 2])
-            a_t = tf.matmul(a_t, self.heads_variables[i]["T_srt_kernel"])  # shape: Exd
-            a_srt = a_sr_ + a_t  # shape: Exd
-            a_sr_t_attention = tf.matmul(
-                a_srt, self.heads_variables[i]["srt_attention_kernel"]
-            )
-            attention_sr_t = unsorted_segment_softmax(
-                a_sr_t_attention, edges[:, 2]
-            )  # star_idx:end_idx, 2])  # shape: Ex1
-            if self.dropout_rate:
-                attention_sr_t = l.Dropout(self.dropout_rate)(
-                    attention_sr_t
-                )  # shape: Ex1
-
-            attention_srt = attention_sr * attention_sr_t
-            update_t = attention_srt * tf.gather(
-                a_sr, edges[:, 2]
-            )  # star_idx:end_idx, 2])
-            update_embeddings = tf.math.unsorted_segment_sum(
-                update_t, edges[:, 2], A.shape[2]
-            )  # star_idx:end_idx, 2], A.shape[2])
-
-            if self.embedding_combination == "additive":
-                new_embeddings = self.additive(message_t, update_embeddings)
-            if self.embedding_combination == "multiplicative":
-                new_embeddings = self.multiplicative(message_t, update_embeddings)
-            if self.embedding_combination == "bi-interaction":
-                new_embeddings = self.bi_interaction(message_t, update_embeddings)
-            new_embeddings = tf.expand_dims(new_embeddings, 0)
-            # batch_emb_head.append(new_embeddings)
-            # batch_emb_head = tf.concat(batch_emb_head, 0)
-            # batch_emb_head = tf.expand_dims(batch_emb_head, 0)
-            outputs_head.append(new_embeddings)  # batch_emb_head)
-        outputs_head = tf.concat(outputs_head, 0)
-        # Combine heads
-        heads_kernel = l.Dropout(self.dropout_rate)(self.heads_kernel)
-        head_weights = activations.softmax(heads_kernel)
-        # Aggregate batch heads embeddings
-        new_embeddings = tf.einsum("hnd,kh->knd", outputs_head, head_weights)
-        new_embeddings = tf.squeeze(new_embeddings, 0)
-        return new_embeddings, R, A
+        pass
 
 
 class CrossAggregation(l.Layer):
@@ -856,9 +543,7 @@ class CrossAggregation(l.Layer):
         if self.output_dim is None:
             self.output_dim = X_s[-1]
         self.kernel = tf.Variable(
-            initial_value=self.initializer(
-                shape=(X_s[-1], self.output_dim)
-            )
+            initial_value=self.initializer(shape=(X_s[-1], self.output_dim))
         )
 
     def call(self, inputs, **kwargs):
@@ -872,10 +557,10 @@ class CrossAggregation(l.Layer):
             attn_score = l.Dropout(self.dropout_rate)(attn_score)
         attention = unsorted_segment_softmax(attn_score, edgelist[:, 1])
         attention = tf.sparse.SparseTensor(edgelist, attention, A.shape)
-        '''attended_embeddings = X_s * attention
+        """attended_embeddings = X_s * attention
         update_embeddings = tf.math.unsorted_segment_sum(
             attended_embeddings, edgelist[:, 1]
-        )'''
+        )"""
         update_embeddings = tf.sparse.sparse_dense_matmul(attention, X)
         return update_embeddings
 
@@ -887,30 +572,19 @@ class GAIN(l.Layer):
     https://arxiv.org/pdf/2011.01393.pdf
     """
 
-    def __init__(self, aggregators_list, output_dim, **kwargs):
-        super(GAIN, self).__init__(**kwargs)
-        self.aggregators_list = aggregators_list
-        self.output_dim = output_dim
-        self.initializer = initializers.GlorotNormal()
-
-    def build(self, input_shape):
-        X_shape, R_shape, A_shape = input_shape
-        self.aggregator_kernel_self = tf.Variable(
-            initial_value=self.initializer(shape=(X_shape[-1], 1))
-        )
-        self.aggregator_kernel2_aggregator = None
+    pass
 
 
 class GAT(l.Layer):
     def __init__(
-            self,
-            hidden_dim,
-            dropout_rate=0.5,
-            activation="relu",
-            add_identity=False,
-            add_bias=True,
-            return_attention=False,
-            **kwargs,
+        self,
+        hidden_dim,
+        dropout_rate=0.5,
+        activation="relu",
+        add_identity=False,
+        add_bias=True,
+        return_attention=False,
+        **kwargs,
     ):
         """
         Implementation of Graph Atttention Networks: https://arxiv.org/pdf/2102.07200.pdf
@@ -937,7 +611,9 @@ class GAT(l.Layer):
         )
         # self.message_kernel_ngb = tf.Variable(initial_value=self.initializer(shape=(X_shape[-1], self.hidden_dim)))
         if self.add_bias:
-            self.bias = tf.Variable(initial_value=self.initializer(shape=(self.hidden_dim,)))
+            self.bias = tf.Variable(
+                initial_value=self.initializer(shape=(self.hidden_dim,))
+            )
 
     def message_self(self, X):
         return tf.matmul(X, self.message_kernel_self)
@@ -1064,7 +740,7 @@ class GCNDirected(l.Layer):
     """
 
     def __init__(
-            self, hidden_dim, activation="relu", dropout_rate=0.5, layer=0, **kwargs
+        self, hidden_dim, activation="relu", dropout_rate=0.5, layer=0, **kwargs
     ):
         super(GCNDirected, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
@@ -1176,28 +852,6 @@ def unsorted_segment_softmax(x, indices, n_nodes=None):
     return e_x
 
 
-"""def attention3d(self, X: tf.Tensor, R, A: tf.sparse.SparseTensor):
-    self_attention = tf.matmul(message_s, self.source_attention_kernel)
-    self_attention = tf.gather(self_attention, A.indices[:, 1])
-    target_attention = tf.matmul(message_t, self.target_attention_kernel)
-    target_attention = tf.gather(target_attention, A.indices[:, 2])
-    relation_attention = tf.matmul(message_r, self.relation_attention_kernel)
-    relation_attention = tf.gather(relation_attention, A.indices[:, 0])
-    source_relation_attention = self_attention + relation_attention
-
-    if self.attention_activation == "relu":
-        source_relation_attention = activations.relu(source_relation_attention)
-    if self.attention_activation == "leaky_relu":
-        attention = l.LeakyReLU(0.2)(source_relation_attention)
-
-    #attention = attention * A.values
-    #attention = stable_softmax_3d(attention, A)
-    #attention = tf.sparse.from_dense(attention, A.indices, A.shape)
-    if self.dropout_rate is not None:
-        attention = l.Dropout(self.dropout_rate)(attention)
-    return attention"""
-
-
 def stable_softmax_3d(attention, A: tf.sparse.SparseTensor):
     """
     Compute softmax over 2d slice of 3d tensor:
@@ -1217,16 +871,30 @@ def stable_softmax_3d(attention, A: tf.sparse.SparseTensor):
 
 class Time2Vec(tf.keras.layers.Layer):
     def __init__(self, kernel_size=1):
-        super(Time2Vec, self).__init__(trainable=True, name='Time2VecLayer')
+        super(Time2Vec, self).__init__(trainable=True, name="Time2VecLayer")
         self.k = kernel_size
 
     def build(self, input_shape):
         # trend
-        self.wb = self.add_weight(name='wb', shape=(input_shape[1],), initializer='uniform', trainable=True)
-        self.bb = self.add_weight(name='bb', shape=(input_shape[1],), initializer='uniform', trainable=True)
+        self.wb = self.add_weight(
+            name="wb", shape=(input_shape[1],), initializer="uniform", trainable=True
+        )
+        self.bb = self.add_weight(
+            name="bb", shape=(input_shape[1],), initializer="uniform", trainable=True
+        )
         # periodic
-        self.wa = self.add_weight(name='wa', shape=(1, input_shape[1], self.k), initializer='uniform', trainable=True)
-        self.ba = self.add_weight(name='ba', shape=(1, input_shape[1], self.k), initializer='uniform', trainable=True)
+        self.wa = self.add_weight(
+            name="wa",
+            shape=(1, input_shape[1], self.k),
+            initializer="uniform",
+            trainable=True,
+        )
+        self.ba = self.add_weight(
+            name="ba",
+            shape=(1, input_shape[1], self.k),
+            initializer="uniform",
+            trainable=True,
+        )
         super(Time2Vec, self).build(input_shape)
 
     def call(self, inputs, **kwargs):
@@ -1250,14 +918,16 @@ class RGAT(l.Layer):
     r-GAT: Relational Graph Attention Network for Multi-Relational Graphs (RGAT)
     """
 
-    def __init__(self,
-                 hidden_dim=10,
-                 input_transform_activation=None,
-                 scoring_activation="sigmoid",
-                 attention_scoring_type="bilinear",
-                 ego_aggregation_type="bi_interaction",
-                 architecture="arkg",
-                 **kwargs):
+    def __init__(
+        self,
+        hidden_dim=10,
+        input_transform_activation=None,
+        scoring_activation="sigmoid",
+        attention_scoring_type="bilinear",
+        ego_aggregation_type="bi_interaction",
+        architecture="arkg",
+        **kwargs,
+    ):
         super(RGAT, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
         self.input_transform_activation = input_transform_activation
@@ -1270,9 +940,9 @@ class RGAT(l.Layer):
         self.r_embed = l.Dense(self.hidden_dim, self.input_transform_activation)
 
         if self.attention_scoring_type == "bilinear":
-            self.scoring = BilinearScoring(self.scoring_activation)
+            self.scoring = BilinearRelationalScoringSparse(self.scoring_activation)
         elif self.attention_scoring_type == "linear":
-            self.scoring = LinearScoring(self.scoring_activation)
+            self.scoring = LinearScoringSparse(self.scoring_activation)
         elif self.attention_scoring_type == "kgat":
             self.scoring = KgatScoring()
 
@@ -1293,24 +963,41 @@ class RGAT(l.Layer):
 
 
 class AttentionBasedRelationPrediction(l.Layer):
-    def __init__(self, nodes_embedding_dim, relations_embedding_dim, edge_embedding_dim, edge_activation="relu"):
+    def __init__(
+        self,
+        nodes_embedding_dim,
+        relations_embedding_dim,
+        edge_embedding_dim,
+        edge_activation="relu",
+    ):
         super(AttentionBasedRelationPrediction, self).__init__()
         self.nodes_embedding_dim = nodes_embedding_dim
         self.relations_embedding_dim = relations_embedding_dim
         self.edge_embedding_dim = edge_embedding_dim
         self.edge_activation = edge_activation
-        self.edge_embedding_func = LinearScoring(self.edge_activation, self.edge_embedding_dim)
+        self.edge_embedding_func = LinearScoringSparse(
+            self.edge_activation, self.edge_embedding_dim
+        )
         self.score2adj = ScoreSoftmax()
         self.aggregate = AggregateEmbedding()
 
     def build(self, input_shape):
         x, r, a = input_shape
-        self.w_e = self.add_variable("W_edge_score", shape=(self.edge_embedding_dim, 1),
-                                     initializer="glorot_normal")
-        self.w_x = self.add_variable("W_nodes_embedding", shape=(x[-1], self.nodes_embedding_dim),
-                                     initializer="glorot_normal")
-        self.w_r = self.add_variable("W_nodes_embedding", shape=(r[-1], self.relations_embedding_dim),
-                                     initializer="glorot_normal")
+        self.w_e = self.add_weight(
+            "W_edge_score",
+            shape=(self.edge_embedding_dim, 1),
+            initializer="glorot_normal",
+        )
+        self.w_x = self.add_weight(
+            "W_nodes_embedding",
+            shape=(x[-1], self.nodes_embedding_dim),
+            initializer="glorot_normal",
+        )
+        self.w_r = self.add_weight(
+            "W_nodes_embedding",
+            shape=(r[-1], self.relations_embedding_dim),
+            initializer="glorot_normal",
+        )
 
     def call(self, inputs, *args, **kwargs):
         x, r, a = inputs
@@ -1321,23 +1008,25 @@ class AttentionBasedRelationPrediction(l.Layer):
         scores = tf.reshape(scores, [-1])  # E
         adj = self.score2adj([scores, a])
         h = self.aggregate([e_emb, adj])
-        return h
+        return h, r_emb
 
 
-class LinearScoring(l.Layer):
+class LinearScoringSparse(l.Layer):
     """
     Implements a linear scoring function:
     Formula: (x_i||x_j||r_ij).dot(W) : W € R^(2f+f_r x 1)
     """
 
     def __init__(self, activation="sigmoid", units=1):
-        super(LinearScoring, self).__init__()
+        super(LinearScoringSparse, self).__init__()
         self.activation = activation
         self.units = units
 
     def build(self, input_shape):
         x, r, a = input_shape
-        self.w = self.add_variable(name="linear_scoring_weight", shape=(2 * x[-1] + r[-1], self.units))
+        self.w = self.add_weight(
+            name="linear_scoring_weight", shape=(2 * x[-1] + r[-1], self.units)
+        )
 
     def call(self, inputs, *args, **kwargs):
         x, r, a = inputs
@@ -1353,16 +1042,19 @@ class LinearScoring(l.Layer):
         return scores
 
 
-class BilinearScoring(l.Layer):
+class BilinearRelationalScoringSparse(l.Layer):
     """
     Implements a bilinear score between source-relation, target-relation and source-target nodes
     Formula: x_i.dot(W1).dot(r_i) + x_j.dot(W2).dot(r_i) + x_i.dot(W3).dot(x_j)
     """
 
-    def __init__(self, activation="sigmoid", regularize=False):
-        super(BilinearScoring, self).__init__()
+    def __init__(self, activation="sigmoid", dropout_rate=0.5, regularize=False):
+        super(BilinearRelationalScoringSparse, self).__init__()
         self.activation = activation
         self.regularize = regularize
+        self.dropout_rate = dropout_rate
+        self.dropout_x = l.Dropout(self.dropout_rate)
+        self.dropout_r = l.Dropout(self.dropout_rate)
 
     def build(self, input_shape):
         x, r, a = input_shape
@@ -1370,26 +1062,100 @@ class BilinearScoring(l.Layer):
             regularizer = "l2"
         else:
             regularizer = None
-        self.x_source_r_kernel = self.add_variable(name="bilinear_source2rel", shape=(x[-1], r[-1]),
-                                                   initializer="glorot_normal", regularizer=regularizer)
-        self.x_target_r_kernel = self.add_variable(name="bilinear_target2rel", shape=(x[-1], r[-1]),
-                                                   initializer="glorot_normal", regularizer=regularizer)
-        self.x_source_target_kernel = self.add_variable(name="bilinear_source2target", shape=(x[-1], x[-1]),
-                                                        initializer="glorot_normal", regularizer=regularizer)
+        self.x_source_r_kernel = self.add_weight(
+            name="bilinear_source2rel",
+            shape=(x[-1], r[-1]),
+            initializer="glorot_normal",
+            regularizer=regularizer,
+        )
+        self.x_target_r_kernel = self.add_weight(
+            name="bilinear_target2rel",
+            shape=(x[-1], r[-1]),
+            initializer="glorot_normal",
+            regularizer=regularizer,
+        )
+        self.x_source_target_kernel = self.add_weight(
+            name="bilinear_source2target",
+            shape=(x[-1], x[-1]),
+            initializer="glorot_normal",
+            regularizer=regularizer,
+        )
 
     def call(self, inputs, *args, **kwargs):
         x, r, a = inputs
+        if self.dropout_rate:
+            x = self.dropout_x(x)
+            r = self.dropout_r(r)
         assert isinstance(a, tf.sparse.SparseTensor)
         k, i, j = a.indices[:, 0], a.indices[:, 1], a.indices[:, 2]
         x_source = tf.gather(x, i)
         x_target = tf.gather(x, j)
         r_emb = tf.gather(r, k)
-        x_source2r_score = tf.einsum("ij,jk,ik->i", x_source, self.x_source_r_kernel, r_emb)
-        x_target2r_score = tf.einsum("ij,jk,ik->i", x_target, self.x_source_r_kernel, r_emb)
-        x_source2target_score = tf.einsum("ij,jk,ik->i", x_source, self.x_source_target_kernel, x_target)
+        x_source2r_score = tf.einsum(
+            "ij,jk,ik->i", x_source, self.x_source_r_kernel, r_emb
+        )
+        x_target2r_score = tf.einsum(
+            "ij,jk,ik->i", x_target, self.x_target_r_kernel, r_emb
+        )
+        x_source2target_score = tf.einsum(
+            "ij,jk,ik->i", x_source, self.x_source_target_kernel, x_target
+        )
         score = x_source2r_score + x_target2r_score + x_source2target_score
         score = activations.get(self.activation)(score)
         return score
+
+
+# TODO
+class LinearScoringDense(l.Layer):
+    def __init__(self, activation=None, regularizer=None):
+        super(LinearScoringDense, self).__init__()
+        self.activation = activation
+        self.regularizer = regularizer
+
+    def build(self, input_shape):
+        x, r, a = input_shape
+        self.x_source_kernel = self.add_weight(
+            name="w_xs",
+            shape=(x[-1], 1),
+            initializer="glorot_normal",
+            regularizer=self.regularizer,
+        )
+        self.x_target_kernel = self.add_weight(
+            name="w_xt",
+            shape=(x[-1], 1),
+            initializer="glorot_normal",
+            regularizer=self.regularizer,
+        )
+        self.r_kernel = self.add_weight(
+            name="w_r",
+            shape=(r[-1], 1),
+            initializer="glorot_normal",
+            regularizer=self.regularizer,
+        )
+
+    def call(self, inputs, *args, **kwargs):
+        x, r, a = inputs
+        x_s_score = tf.matmul(x, self.x_source_kernel)
+        x_t_score = tf.matmul(x, self.x_target_kernel)
+        r_score = tf.matmul(r, self.r_kernel)
+        attn_s_t = x_s_score + tf.transpose(x_t_score)  # NxN
+        attn = tf.expand_dims(attn_s_t, 1) + r_score  # NxNxR
+        attn = tf.transpose(attn, (1, 0, 2))  # RxNxN
+        attn = activations.get(self.activation)(attn)
+        return attn
+
+
+# TODO
+class BilinearRelationalScoringDense(l.Layer):
+    def __init__(self):
+        super(BilinearRelationalScoringDense, self).__init__()
+        self.x_source_r = BilinearDecoderDense()
+        self.x_target_r = BilinearDecoderDense()
+        self.x_source_target = BilinearDecoderDense()
+
+    def call(self, inputs, *args, **kwargs):
+        x, r, a = inputs
+        x_s_r = self.x_source_r()
 
 
 class KgatScoring(l.Layer):
@@ -1401,7 +1167,7 @@ class KgatScoring(l.Layer):
         x, r, a = input_shape
 
         for i in range(a[0]):
-            wr = self.add_variable(f"Wr_scoring_{i}", shape=(x[-1], r[-1]))
+            wr = self.add_weight(f"Wr_scoring_{i}", shape=(x[-1], r[-1]))
             self.Wr.append(wr)
 
     def call(self, inputs, *args, **kwargs):
@@ -1430,9 +1196,8 @@ class ScoreSoftmax(l.Layer):
         adj = tf.sparse.transpose(adj, (1, 2, 0))  # Ni X Nj x R
         adj_reshaped = tf.sparse.reshape(adj, (a.shape[-1], -1))  # Ni x (Nj*R)
         soft = tf.sparse.softmax(adj_reshaped)
-        soft = tf.sparse.reshape(soft, adj.shape)
-        soft = tf.sparse.transpose(soft, (2,0,1))
-        # fill zeros with -inf value to make softmax zero
+        soft = tf.sparse.reshape(soft, adj.shape)  # Ni X Nj x R
+        soft = tf.sparse.transpose(soft, (2, 0, 1))  # R x Ni x Nj
         return soft
 
 
@@ -1451,28 +1216,12 @@ class AggregateEmbedding(l.Layer):
         """
         e_kij, a = inputs
         d = e_kij.shape[-1]
-        r, n, _ = tf.reduce_max(a.indices, 0) + 1
+        r, n, n = a.shape[0], a.shape[1], a.shape[2]
         if isinstance(a, tf.Tensor):
             a = tf.sparse.from_dense(a)
         k, i, j = a.indices[:, 0], a.indices[:, 1], a.indices[:, 2]
         h_list = tf.expand_dims(a.values, -1) * e_kij
-        h = tf.tensor_scatter_nd_add(tf.zeros((n, d), dtype=a.values.dtype), tf.expand_dims(i, -1), h_list)
+        h = tf.tensor_scatter_nd_add(
+            tf.zeros((n, d), dtype=a.values.dtype), tf.expand_dims(i, -1), h_list
+        )
         return h
-
-
-if __name__ == "__main__":
-    nodes = 20
-    ft = 10
-    r = 15
-
-    A = make_data(1, 15, 20)
-    R = tf.Variable(np.random.normal(size=(r, ft)), dtype=tf.float32)
-    X = tf.Variable(np.random.normal(size=(nodes, ft)), dtype=tf.float32)
-
-    rghat = RGHAT(15, 15, "additive", 0.5)
-    A0 = tf.sparse.slice(A, (0, 0, 0, 0), (1, r, nodes, nodes))
-    A0_dense = tf.sparse.to_dense(A0)
-    A0_squeeze = tf.squeeze(A0_dense, axis=0)
-    A0_sparse = tf.sparse.from_dense(A0_squeeze)
-    new_emb, R, A = rghat([X, R, A0_sparse])
-    # print(new_emb)

@@ -9,131 +9,13 @@ import tensorflow.keras.backend as k
 from src.modules import layers
 import tensorflow_probability as tfp
 from src.modules import losses
-from src.modules.utils import sample_zero_edges, mask_sparse, predict_all_sparse, add_self_loop
+from src.modules.utils import (
+    sample_zero_edges,
+    mask_sparse,
+    predict_all_sparse,
+    add_self_loop,
+)
 from spektral.layers import GATConv, DiffPool
-
-
-class GraphRNN(m.Model):
-    def __init__(self, encoder, decoder, nodes_embedding_dim, **kwargs):
-        super(GraphRNN, self).__init__(**kwargs)
-        self.encoder = encoder
-        self.decoder = decoder
-        self.mu_activation = "tanh"
-        self.sigma_activation = "relu"
-        self.dropout_rate = kwargs.get("dropout_rate")
-        self.embedding_size = kwargs.get("embedding_size")
-        self.nodes_embedding_dim = nodes_embedding_dim
-
-        if self.encoder == "NTN":
-            self.encoder = layers.NTN
-
-        # self.prior_mean =
-        self.encoder_mean = self.encoder(10, self.mu_activation)
-        self.encoder_sigma = self.encoder(10, self.sigma_activation)
-
-    def call(self, inputs, **kwargs):
-        X, R, A = inputs
-
-
-class GAHRT_Outer_Probabilistic(m.Model):
-    def __init__(self, nodes_features_dim, relations_features_dim, **kwargs):
-        super(GAHRT_Outer_Probabilistic, self).__init__(**kwargs)
-        self.encoder = layers.RGHAT(nodes_features_dim, relations_features_dim)
-        self.decoder = layers.TrippletDecoder(False)
-
-    def call(self, inputs, **kwargs):
-        enc = self.encoder(inputs)
-        dec_mu = activations.relu(self.decoder(enc))
-        dec_sigma = activations.relu(self.decoder(enc)) + 1e-8
-        return dec_mu, dec_sigma
-
-    def sample(self, inputs):
-        mu, sigma = self.call(inputs)
-        logn = tfp.distributions.LogNormal(mu, sigma)
-        return tf.squeeze(logn._sample_n(1))
-
-
-class GAHRT_Outer_Deterministic(m.Model):
-    def __init__(
-            self, layers_nodes_features_dim, layers_relations_features_dim, **kwargs
-    ):
-        super(GAHRT_Outer_Deterministic, self).__init__(**kwargs)
-        self.encoders = []
-        self.layers_nodes_features_dim = layers_nodes_features_dim
-        self.layers_relations_features_dim = layers_relations_features_dim
-        assert len(self.layers_nodes_features_dim) == len(
-            self.layers_relations_features_dim
-        )
-        for fn, fr in zip(
-                self.layers_nodes_features_dim, self.layers_relations_features_dim
-        ):
-            self.encoders.append(layers.RGHAT(fn, fr))
-        self.decoder = layers.TrippletDecoderOuterSparse(True)
-        self.regularizer = layers.SparsityRegularizer(0.5)
-
-    def call(self, inputs, **kwargs):
-        for i in range(len(self.layers_nodes_features_dim)):
-            inputs = self.encoders[i](inputs)
-        print(inputs[-1].shape)
-        print(inputs[-1].indices.shape)
-        X, R, A = inputs
-        A_dec = activations.softplus(self.decoder(inputs))
-        print(A_dec.shape)
-        A_dec = tf.sparse.SparseTensor(inputs[-1].indices, A_dec, inputs[-1].shape)
-        self.regularizer(A_dec.values)
-        return inputs[0], inputs[1], A_dec
-
-
-class GAHRT_NTN_Deterministic(m.Model):
-    def __init__(
-            self, layers_nodes_features_dim, layers_relations_features_dim, **kwargs
-    ):
-        super(GAHRT_NTN_Deterministic, self).__init__(**kwargs)
-        self.encoders = []
-        self.layers_nodes_features_dim = layers_nodes_features_dim
-        self.layers_relations_features_dim = layers_relations_features_dim
-        for fn, fr in zip(
-                self.layers_nodes_features_dim, self.layers_relations_features_dim
-        ):
-            self.encoders.append(layers.RGHAT(fn, fr))
-        self.decoder = layers.NTN()
-        self.regularizer = losses.SparsityRegularizerLayer(0.5)
-
-    def call(self, inputs, **kwargs):
-        for i in range(len(self.layers_nodes_features_dim)):
-            inputs = self.encoders[i](inputs)
-        dec_X, dec_A = self.decoder([inputs[0], inputs[2]])
-        dec_A = activations.relu(dec_A.values)
-        dec_A = tf.sparse.SparseTensor(inputs[-1].indices, dec_A.values)
-        self.regularizer(dec_A.values)
-        return dec_X, inputs[1], dec_A.values
-
-
-class GAHRT_Tripplet_Falt_Deterministic(m.Model):
-    def __init__(
-            self, layers_nodes_features_dim, layers_relations_features_dim, **kwargs
-    ):
-        super(GAHRT_Tripplet_Falt_Deterministic, self).__init__(**kwargs)
-        self.encoders = []
-        self.layers_nodes_features_dim = layers_nodes_features_dim
-        self.layers_relations_features_dim = layers_relations_features_dim
-        assert len(self.layers_nodes_features_dim) == len(
-            self.layers_relations_features_dim
-        )
-        for fn, fr in zip(
-                self.layers_nodes_features_dim, self.layers_relations_features_dim
-        ):
-            self.encoders.append(layers.RGHAT(fn, fr))
-        self.decoder = layers.TrippletScoreFlatSparse(2)
-        self.regularizer = losses.SparsityRegularizerLayer(0.5)
-
-    def call(self, inputs, **kwargs):
-        for i in range(len(self.layers_nodes_features_dim)):
-            inputs = self.encoders[i](inputs)
-        X, R, A_dec = self.decoder(inputs)
-        # A_dec = activations.softplus(A_dec.values)
-        # self.regularizer(A_dec.values)
-        return X, R, A_dec
 
 
 class NTN(m.Model):
@@ -142,7 +24,9 @@ class NTN(m.Model):
         self.n_layers = n_layers
         self.ntns = []
         for i in range(self.n_layers):
-            self.ntns.append(layers.NTN(activation=activation, output_activation=output_activation))
+            self.ntns.append(
+                layers.NTN(activation=activation, output_activation=output_activation)
+            )
 
     def call(self, inputs, **kwargs):
         for i in range(self.n_layers):
@@ -171,17 +55,24 @@ class Bilinear(m.Model):
     def build(self, input_shape):
         self.bilinear = layers.Bilinear(self.hidden, self.activation, qr=self.qr)
         if self.use_mask:
-            self.bilinear_mask = layers.Bilinear(self.hidden, qr=self.qr)
+            self.bilinear_mask = layers.Bilinear(
+                self.hidden, activation="sigmoid", qr=self.qr
+            )
         # self.regularizer = losses.SparsityRegularizerLayer(0.5)
 
     def call(self, inputs, **kwargs):
         X, A = self.bilinear(inputs)
         if self.use_mask:
             X_mask, A_mask = self.bilinear_mask(inputs)
-            A = tf.math.multiply(A, A_mask)
-        A_flat = tf.reshape(A, [-1])
+            # A = tf.math.multiply(A, A_mask)
+        # Eliminate diagonal
+        A = A * (tf.ones_like(A) - tf.eye(A.shape[0]))
+        # A_flat = tf.reshape(A, [-1])
         # self.add_loss(self.regularizer(A_flat))
-        return X, A
+        if self.use_mask:
+            return X, X_mask, A, A_mask
+        else:
+            return X, A
 
 
 class BilinearSparse(m.Model):
@@ -272,7 +163,7 @@ class GCN_Classifier(m.Model):
 
 class GCNDirectedBIL(m.Model):
     def __init__(
-            self, hidden_dims, sparse_regularize, emb_regularize, skip_connections, **kwargs
+        self, hidden_dims, sparse_regularize, emb_regularize, skip_connections, **kwargs
     ):
         super(GCNDirectedBIL, self).__init__(**kwargs)
         self.hidden_dims = hidden_dims
@@ -311,7 +202,7 @@ class GCNDirectedBIL(m.Model):
 
 class GCNDirectedClassifier(m.Model):
     def __init__(
-            self, hidden_dims, sparse_regularize, emb_regularize, skip_connections, **kwargs
+        self, hidden_dims, sparse_regularize, emb_regularize, skip_connections, **kwargs
     ):
         super(GCNDirectedClassifier, self).__init__(**kwargs)
         self.hidden_dims = hidden_dims
@@ -405,13 +296,13 @@ class GAT_Inner(m.Model):
 
 class MultiHeadGAT_BIL(m.Model):
     def __init__(
-            self,
-            heads,
-            hidden_dim,
-            sparse_rate,
-            embedding_smoothness_rate,
-            return_attention=False,
-            **kwargs,
+        self,
+        heads,
+        hidden_dim,
+        sparse_rate,
+        embedding_smoothness_rate,
+        return_attention=False,
+        **kwargs,
     ):
         super(MultiHeadGAT_BIL, self).__init__(**kwargs)
         self.return_attention = return_attention
@@ -452,7 +343,7 @@ class MultiHeadGAT_BIL(m.Model):
 
 class MultiHeadGAT_Inner(m.Model):
     def __init__(
-            self, heads, hidden_dim, sparse_rate, embedding_smoothness_rate, **kwargs
+        self, heads, hidden_dim, sparse_rate, embedding_smoothness_rate, **kwargs
     ):
         super(MultiHeadGAT_Inner, self).__init__(**kwargs)
         self.heads = heads
@@ -481,7 +372,7 @@ class MultiHeadGAT_Inner(m.Model):
 
 class MultiHeadGAT_Flat(m.Model):
     def __init__(
-            self, heads, hidden_dim, sparse_rate, embedding_smoothness_rate, **kwargs
+        self, heads, hidden_dim, sparse_rate, embedding_smoothness_rate, **kwargs
     ):
         super(MultiHeadGAT_Flat, self).__init__(**kwargs)
         self.heads = heads
@@ -510,7 +401,7 @@ class MultiHeadGAT_Flat(m.Model):
 
 class MultiHeadGAT_Classifier(m.Model):
     def __init__(
-            self, heads, hidden_dim, sparse_rate, embedding_smoothness_rate, **kwargs
+        self, heads, hidden_dim, sparse_rate, embedding_smoothness_rate, **kwargs
     ):
         super(MultiHeadGAT_Classifier, self).__init__(**kwargs)
         self.heads = heads
@@ -569,32 +460,37 @@ class GAT_Inner_spektral_dense(m.Model):
 
 
 class GAT_BIL_spektral(m.Model):
-    def __init__(self, channels=10,
-                 attn_heads=10,
-                 concat_heads=False,
-                 add_self_loop=False,
-                 dropout_rate=0.5,
-                 output_activation="relu",
-                 use_mask=False,
-                 sparsity=0.,
-                 **kwargs):
+    def __init__(
+        self,
+        channels=10,
+        attn_heads=10,
+        concat_heads=False,
+        add_self_loop=False,
+        dropout_rate=0.5,
+        output_activation="relu",
+        use_mask=False,
+        sparsity=0.0,
+        **kwargs,
+    ):
         super(GAT_BIL_spektral, self).__init__()
 
         self.channles = channels
         self.attn_heads = attn_heads
         self.concat_heads = concat_heads
-        self.add_self_loop=add_self_loop
+        self.add_self_loop = add_self_loop
         self.dropout_rate = dropout_rate
         self.output_activation = output_activation
         self.use_mask = use_mask
         self.sparsity = sparsity
 
-        self.gat = GATConv(channels=self.channles,
-                           attn_heads=self.attn_heads,
-                           concat_heads=self.concat_heads,
-                           dropout_rate=self.dropout_rate,
-                           add_self_loop=self.add_self_loop,
-                           **kwargs)
+        self.gat = GATConv(
+            channels=self.channles,
+            attn_heads=self.attn_heads,
+            concat_heads=self.concat_heads,
+            dropout_rate=self.dropout_rate,
+            add_self_loop=self.add_self_loop,
+            **kwargs,
+        )
         self.bil_w = layers.BilinearDecoderSparse(self.output_activation)
         # self.bil_mask = layers.BilinearDecoderSparse("sigmoid")
 
@@ -609,17 +505,20 @@ class GAT_BIL_spektral(m.Model):
 
 
 class GAT_BIL_spektral_dense(m.Model):
-    def __init__(self, channels=10,
-                 attn_heads=10,
-                 n_layers=2,
-                 concat_heads=True,
-                 dropout_rate=0.60,
-                 add_self_loop = False,
-                 return_attn_coef=False,
-                 output_activation="relu",
-                 use_mask=False,
-                 sparsity=0.,
-                 **kwargs):
+    def __init__(
+        self,
+        channels=10,
+        attn_heads=10,
+        n_layers=2,
+        concat_heads=True,
+        dropout_rate=0.60,
+        add_self_loop=False,
+        return_attn_coef=False,
+        output_activation="relu",
+        use_mask=False,
+        sparsity=0.0,
+        **kwargs,
+    ):
         super(GAT_BIL_spektral_dense, self).__init__()
         self.channles = channels
         self.attn_heads = attn_heads
@@ -632,29 +531,35 @@ class GAT_BIL_spektral_dense(m.Model):
         self.use_mask = use_mask
         self.sparsity = sparsity
 
-        self.gat = GATConv(channels=self.channles,
-                           attn_heads=self.attn_heads,
-                           concat_heads=self.concat_heads,
-                           dropout_rate=self.dropout_rate,
-                           add_self_loop=self.add_self_loop,
-                           return_attn_coef=self.return_attn_coef,
-                           **kwargs)
-        self.gat2 = GATConv(channels=self.channles//2,
-                           attn_heads=self.attn_heads//2,
-                           concat_heads=self.concat_heads,
-                           dropout_rate=self.dropout_rate,
-                           add_self_loop=self.add_self_loop,
-                           return_attn_coef=self.return_attn_coef,
-                           **kwargs)
+        self.gat = GATConv(
+            channels=self.channles,
+            attn_heads=self.attn_heads,
+            concat_heads=self.concat_heads,
+            dropout_rate=self.dropout_rate,
+            add_self_loop=self.add_self_loop,
+            return_attn_coef=self.return_attn_coef,
+            **kwargs,
+        )
+        self.gat2 = GATConv(
+            channels=self.channles // 2,
+            attn_heads=self.attn_heads // 2,
+            concat_heads=self.concat_heads,
+            dropout_rate=self.dropout_rate,
+            add_self_loop=self.add_self_loop,
+            return_attn_coef=self.return_attn_coef,
+            **kwargs,
+        )
         self.bil_w = layers.BilinearDecoderDense(activation=self.output_activation)
         if self.use_mask:
-            self.gat_bin = GATConv(channels=self.channles,
-                               attn_heads=self.attn_heads,
-                               concat_heads=self.concat_heads,
-                               dropout_rate=self.dropout_rate,
-                               add_self_loop=self.add_self_loop,
-                               return_attn_coef=self.return_attn_coef,
-                               **kwargs)
+            self.gat_bin = GATConv(
+                channels=self.channles,
+                attn_heads=self.attn_heads,
+                concat_heads=self.concat_heads,
+                dropout_rate=self.dropout_rate,
+                add_self_loop=self.add_self_loop,
+                return_attn_coef=self.return_attn_coef,
+                **kwargs,
+            )
             self.bil_mask = layers.BilinearDecoderDense("sigmoid")
 
     def call(self, inputs, training=None, mask=None):
@@ -682,7 +587,7 @@ class GAT_BIL_spektral_dense(m.Model):
             mask = tf.where(a_mask > 0.5, 1.0, 0.0)
             if self.sparsity:
                 self.add_loss(losses.SparsityRegularizerLayer(self.sparsity)(a_mask))
-            #a_final = tf.math.multiply(a_w, mask)
+            # a_final = tf.math.multiply(a_w, mask)
             if self.return_attn_coef:
                 return xw, a_w, a_mask, attn
             else:
@@ -712,16 +617,18 @@ class GraphSamplerSparse(tf.keras.models.Model):
         probs_dense = tf.sparse.to_dense(probs)
         # bernulli_sampler = tfp.distributions.RelaxedOneHotCategorical(probs=probs_dense, temperature=0.5)
         prior = tfp.distributions.Independent(
-            tfp.distributions.RelaxedOneHotCategorical(0.1, 0.5 * tf.ones_like(inputs)))
+            tfp.distributions.RelaxedOneHotCategorical(0.1, 0.5 * tf.ones_like(inputs))
+        )
         distr_layer = tfp.layers.DistributionLambda(
-            make_distribution_fn=lambda x: tfp.distributions.RelaxedOneHotCategorical(probs=x,
-                                                                                      temperature=self.temperature),
+            make_distribution_fn=lambda x: tfp.distributions.RelaxedOneHotCategorical(
+                probs=x, temperature=self.temperature
+            ),
             convert_to_tensor_fn=lambda x: x.sample(),
-            activity_regularizer=tfp.layers.KLDivergenceRegularizer(prior, weight=1)
+            activity_regularizer=tfp.layers.KLDivergenceRegularizer(prior, weight=1),
         )
         # bernulli_sampler = tfp.distributions.Bernoulli(probs=probs_dense)
-        '''a_m_sample = bernulli_sampler.sample()
-        a_m_sample = tf.cast(a_m_sample, tf.float32)'''
+        """a_m_sample = bernulli_sampler.sample()
+        a_m_sample = tf.cast(a_m_sample, tf.float32)"""
         # a_m_sample_sp = tf.sparse.from_dense(a_m_sample)
         a_m_sample = distr_layer(probs_dense)
         a_masked = a.__mul__(a_m_sample)
@@ -744,12 +651,14 @@ class GraphSamplerDense(tf.keras.models.Model):
         x_m, a_m = self.bil_mask(inputs)
         probs = tf.nn.softmax(a_m)
         prior = tfp.distributions.Independent(
-            tfp.distributions.RelaxedOneHotCategorical(0.1, 0.5 * tf.ones_like(inputs)))
+            tfp.distributions.RelaxedOneHotCategorical(0.1, 0.5 * tf.ones_like(inputs))
+        )
         distr_layer = tfp.layers.DistributionLambda(
-            make_distribution_fn=lambda x: tfp.distributions.RelaxedOneHotCategorical(probs=x,
-                                                                                      temperature=self.temperature),
+            make_distribution_fn=lambda x: tfp.distributions.RelaxedOneHotCategorical(
+                probs=x, temperature=self.temperature
+            ),
             convert_to_tensor_fn=lambda x: x.sample(),
-            activity_regularizer=tfp.layers.KLDivergenceRegularizer(prior, weight=1)
+            activity_regularizer=tfp.layers.KLDivergenceRegularizer(prior, weight=1),
         )
         a_m_sample = distr_layer(probs)
         a_masked = tf.math.multiply(a, a_m_sample)
@@ -781,7 +690,7 @@ def slice_data(data_sp, t, X, sparse=True, r=None, log=False, simmetrize=False):
     A = tf.sparse.to_dense(A)
     A = tf.squeeze(A, 0)
     if r is not None and isinstance(r, tuple):
-        A = A[r[0]: r[1]]
+        A = A[r[0] : r[1]]
     elif r is not None and isinstance(r, int):
         A = A[r]
     if log:
@@ -824,8 +733,8 @@ if __name__ == "__main__":
     # X = tf.Variable(np.random.normal(size=(nodes, ft)), dtype=tf.float32)
     if dataset == "comtrade":
         with open(
-                "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
-                "rb",
+            "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
+            "rb",
         ) as file:
             data_np = pkl.load(file)
         data_sp = tf.sparse.SparseTensor(
@@ -899,10 +808,9 @@ if __name__ == "__main__":
         r = 10
         inputs = [X]
     elif model == "gat_bil_spk":
-        model = GAT_BIL_spektral(channels=10,
-                                 attn_heads=10,
-                                 concat_heads=False,
-                                 dropout_rate=0.5)
+        model = GAT_BIL_spektral(
+            channels=10, attn_heads=10, concat_heads=False, dropout_rate=0.5
+        )
         sparse = True
         r = 10
         inputs = [X]
@@ -1052,13 +960,13 @@ if __name__ == "__main__":
         plt.imshow(mask)
         plt.colorbar()
         with open(
-                "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/idx_to_countries.pkl",
-                "rb",
+            "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/idx_to_countries.pkl",
+            "rb",
         ) as file:
             idx2country = pkl.load(file)
         with open(
-                "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/iso3_to_name.pkl",
-                "rb",
+            "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/iso3_to_name.pkl",
+            "rb",
         ) as file:
             iso3_to_name = pkl.load(file)
 
