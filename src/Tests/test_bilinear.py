@@ -62,7 +62,7 @@ if __name__ == "__main__":
         a0 = a0.numpy()
 
     bincross = tf.keras.losses.BinaryCrossentropy()
-    total = 600
+    total = 300
     tq = tqdm.tqdm(total=total)
     l = tf.keras.losses.MeanSquaredError()
     p = 0.2
