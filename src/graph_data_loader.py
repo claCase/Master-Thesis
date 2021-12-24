@@ -141,12 +141,12 @@ def from_edgelist_to_pd(edgelist, values):
 
 
 def select_edges(
-        edge_list: [(int, int, str)],
-        values: [int],
-        years: [int],
-        code1: [str],
-        code2: [str],
-        products: [str],
+    edge_list: [(int, int, str)],
+    values: [int],
+    years: [int],
+    code1: [str],
+    code2: [str],
+    products: [str],
 ):
     subgraph_edgelist = []
     subgraph_values = []
@@ -176,7 +176,7 @@ def load_from_WITS(folder=YEARS_FOLDER, t1=1989, t2=1989):
             (df["ReporterISO3"] != "WLD")
             & (df["ReporterISO3"] != "PartnerISO3")
             & (df["PartnerISO3"] != "WLD")
-            ]
+        ]
         df["ProductCode2"] = df["ProductCode"].astype(str).str[:4]
         codes = df.groupby(["ProductCode2", "ReporterISO3", "PartnerISO3"])[
             "TradeValue"
@@ -201,12 +201,12 @@ def get_product_subgraph(G: nx.MultiGraph, prod_key: str) -> nx.Graph:
 
 
 def draw_subgraph(
-        G: nx.MultiDiGraph,
-        prod_keys: [str],
-        nodes: [str] = None,
-        log_scale=True,
-        normalize=True,
-        quantile=0.10,
+    G: nx.MultiDiGraph,
+    prod_keys: [str],
+    nodes: [str] = None,
+    log_scale=True,
+    normalize=True,
+    quantile=0.10,
 ):
     lat_long = get_iso2_long_lat()
     radius = np.linspace(-0.1, -0.5, len(prod_keys))
@@ -278,27 +278,51 @@ def draw_subgraph(
 def plot_names(X, ax=None):
 
     with open(
-            "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/idx_to_countries.pkl",
-            "rb",
+        "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/idx_to_countries.pkl",
+        "rb",
     ) as file:
         idx2country = pkl.load(file)
     with open(
-            "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/iso3_to_name.pkl",
-            "rb",
+        "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/iso3_to_name.pkl",
+        "rb",
     ) as file:
         iso3_to_name = pkl.load(file)
     iso3 = [idx2country[i] for i in range(len(X))]
     names = [iso3_to_name[int(i)] for i in iso3]
     if ax is None:
         fig, ax = plt.subplots()
-        ax.scatter(X[:, 0], X[:, 1])  # , X[:, 2])
+        ax.scatter(X[:, 0], X[:, 1])
     for c, (x, y) in zip(names, X[:, :2]):
         ax.text(x, y, f"{c}", size=7)
 
+
+def plot_products(X, ax=None):
+    with open(
+        "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\idx_to_prod_SITC1.pkl",
+        "rb",
+    ) as file:
+        idx2prod = pkl.load(file)
+
+    if ax is None:
+        plt.scatter(X[:, 0], X[:, 1])
+        for p, (x, y) in zip(idx2prod.values(), X):
+            plt.text(x, y, f"{p}", size=7)
+    else:
+        ax.scatter(X[:, 0], X[:, 1])
+        for p, (x, y) in zip(idx2prod.values(), X):
+            ax.text(x, y, f"{p}", size=7)
+
+
 def plot_cum_trade(A):
-    with open("A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\idx_to_countries.pkl", "rb") as file:
+    with open(
+        "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\idx_to_countries.pkl",
+        "rb",
+    ) as file:
         cn = pkl.load(file)
-    with open("A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\iso3_to_name.pkl", "rb") as file:
+    with open(
+        "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\iso3_to_name.pkl",
+        "rb",
+    ) as file:
         cnames = pkl.load(file)
 
     sum_trade = np.sum(A, 1)

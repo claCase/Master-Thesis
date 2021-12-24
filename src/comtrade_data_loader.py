@@ -19,7 +19,7 @@ import tqdm
 
 
 # cpi.update()
-os.chdir("../")
+# os.chdir("../")
 # print(os.getcwd())
 COUNTRIES_CODES_PATH = os.path.join(
     os.getcwd(), "Comtrade", "Reference Table", "Comtrade Country Code and ISO list.xls"
@@ -294,10 +294,10 @@ def codes_conversion_dict(code1: str, code2: str, precision=2, conversion_table=
     freq_conversion = freq_conversion.reset_index()
     freq_conversion.columns = [*freq_conversion.columns[:-1], "Counts"]
     idx = (
-            freq_conversion.groupby([codes_precision[0]])["Counts"].transform(
-                lambda x: x.max()
-            )
-            == freq_conversion.Counts
+        freq_conversion.groupby([codes_precision[0]])["Counts"].transform(
+            lambda x: x.max()
+        )
+        == freq_conversion.Counts
     )
     freq_conversion = freq_conversion[idx]
     keys = freq_conversion[codes_precision[0]]
@@ -325,27 +325,27 @@ def cow_iso3_to_country_codes(save=True):
 
 
 def get_data(
-        country1: [str],
-        country2: [str],
-        commodity: [str],
-        flow=(1,),
-        frequency: str = "A",
-        year: [str] = ("all",),
-        month: [str] = ("",),
-        reporting_code: str = "S1",
-        proxy: {} = None,
-        n_tries=0,
+    country1: [str],
+    country2: [str],
+    commodity: [str],
+    flow=(1,),
+    frequency: str = "A",
+    year: [str] = ("all",),
+    month: [str] = ("",),
+    reporting_code: str = "S1",
+    proxy: {} = None,
+    n_tries=0,
 ):
     commodity_ = "".join([str(c) + "," for c in commodity if c != ""])
     commodity_ = commodity_[:-1]
     flow_ = "".join([str(f) for f in flow])
     dates = []
     country1_ = "".join([str(country) + "," for country in country1 if country != ""])[
-                :-1
-                ]
+        :-1
+    ]
     country2_ = "".join([str(country) + "," for country in country2 if country != ""])[
-                :-1
-                ]
+        :-1
+    ]
     if month[0] != "" or year[0] != "all":
         for z, (i, j) in enumerate(product(year, month)):
             if z != len(year) * len(month):
@@ -577,9 +577,9 @@ def check_years_data_availability(codes=None, save=True):
     for t in range(0, batches):
         print(f"Batch {t}")
         if t < batches:
-            batch_params = params[t * batch_size: (t + 1) * batch_size]
+            batch_params = params[t * batch_size : (t + 1) * batch_size]
         else:
-            batch_params = params[t * batch_size:]
+            batch_params = params[t * batch_size :]
         try:
             # time.sleep(30)
             data_list = parallelize_get_data_requests(batch_params)
@@ -638,15 +638,15 @@ def select_most_avail_countries(quantile=0.5):
 
 
 def link_func(
-        gt,
-        edge_list,
-        param_idx,
-        q,
-        seen: set,
-        data=None,
-        q_proxy: eventlet.Queue = None,
-        proxy=None,
-        save_path=os.path.join(COMTRADE_DATASET, "complete_data.pkl"),
+    gt,
+    edge_list,
+    param_idx,
+    q,
+    seen: set,
+    data=None,
+    q_proxy: eventlet.Queue = None,
+    proxy=None,
+    save_path=os.path.join(COMTRADE_DATASET, "complete_data.pkl"),
 ):
     error = False
     if gt is not None:
@@ -687,11 +687,11 @@ def link_func(
 
 
 def build_dataset(
-        flow=("1",),
-        frequency="A",
-        reporting_code="SITC1",
-        use_proxy=True,
-        file_name="complete_data_new",
+    flow=("1",),
+    frequency="A",
+    reporting_code="SITC1",
+    use_proxy=True,
+    file_name="complete_data_new",
 ):
     if not os.path.exists(PARAMS_LIST):
         if os.path.exists(DATA_AVAILABILITY_PATH):
@@ -795,7 +795,7 @@ def build_dataset(
         open(os.path.join(COMTRADE_DATASET, file_name + f"_{flow}.pkl"), "a").close()
     if os.path.getsize(os.path.join(COMTRADE_DATASET, file_name + f"_{flow}.pkl")) > 0:
         with open(
-                os.path.join(COMTRADE_DATASET, file_name + f"_{flow}.pkl"), "rb"
+            os.path.join(COMTRADE_DATASET, file_name + f"_{flow}.pkl"), "rb"
         ) as file:
             edge_list = pkl.load(file)
     else:
@@ -898,7 +898,7 @@ def join_pickles(file_name_match, folder):
                     d = pkl.load(f)
                     data.extend(d)
     with open(
-            os.path.join(folder, file_name_match + "_joined_complete.pkl"), "wb"
+        os.path.join(folder, file_name_match + "_joined_complete.pkl"), "wb"
     ) as f:
         pkl.dump(data, f)
 
@@ -941,7 +941,7 @@ def products_to_idx(reporting_code="SITC1"):
 def countries_to_idx():
     if not os.path.exists(os.path.join(COMTRADE_DATASET, "countries_to_idx.pkl")):
         countries = get_countries_codes_from_comtrade()
-        codes = countries["Country Code"].astype(str).to_numpy().flatten()
+        codes = countries["Country Code"].astype(int).to_numpy().flatten()
         idx = np.arange(len(codes))
         conversion = {}
         for i, j in zip(codes, idx):
@@ -980,10 +980,10 @@ def product_to_idx(data, dict, data_path=None, conversion_dict_path=None):
 
 def idx_to_product(data=None, reporting_code="SITC1"):
     if os.path.exists(
-            os.path.join(COMTRADE_DATASET, f"idx_to_prod_{reporting_code}.pkl")
+        os.path.join(COMTRADE_DATASET, f"idx_to_prod_{reporting_code}.pkl")
     ):
         with open(
-                os.path.join(COMTRADE_DATASET, f"idx_to_prod_{reporting_code}.pkl"), "rb"
+            os.path.join(COMTRADE_DATASET, f"idx_to_prod_{reporting_code}.pkl"), "rb"
         ) as file:
             idx_to_prod = pkl.load(file)
     else:
@@ -992,7 +992,7 @@ def idx_to_product(data=None, reporting_code="SITC1"):
         for k in prod_to_idx.keys():
             idx_to_prod[prod_to_idx[k]] = k
         with open(
-                os.path.join(COMTRADE_DATASET, f"idx_to_prod_{reporting_code}.pkl"), "wb"
+            os.path.join(COMTRADE_DATASET, f"idx_to_prod_{reporting_code}.pkl"), "wb"
         ) as file:
             pkl.dump(idx_to_prod, file)
     idxs = []
@@ -1044,7 +1044,7 @@ def idx_to_countries(data=None):
         for k in country_to_idx.keys():
             idx_to_country[country_to_idx[k]] = k
             with open(
-                    os.path.join(COMTRADE_DATASET, "idx_to_countries.pkl"), "wb"
+                os.path.join(COMTRADE_DATASET, "idx_to_countries.pkl"), "wb"
             ) as file:
                 pkl.dump(idx_to_country, file)
     converted = []
@@ -1067,7 +1067,6 @@ def filter_not_in_countries_codes(data, file_name=None):
         counter.update(1)
 
     counter = tqdm.tqdm(total=len(not_in_cc), desc="Popping world edges")
-    world_edges = []
     for i in sorted(not_in_cc, reverse=True):
         del data[i]
         counter.update(1)
@@ -1075,11 +1074,11 @@ def filter_not_in_countries_codes(data, file_name=None):
     if file_name:
         with open(os.path.join(COMTRADE_DATASET, file_name), "wb") as file:
             pkl.dump(data, file)
-    return data, world_edges
+    return data, not_in_cc
 
 
 def data_to_idx(
-        data, countries_conversion_dict=None, product_conversion_dict=None, filename=None
+    data, countries_conversion_dict=None, product_conversion_dict=None, filename=None
 ):
     if countries_conversion_dict is None:
         country_dict = countries_to_idx()
@@ -1105,13 +1104,13 @@ def data_to_idx(
             no_key.append(i)
         counter.update(1)
 
-    for i in no_key:
+    for i in sorted(no_key, reverse=True):
         data.pop(i)
 
     if filename is not None:
         with open(os.path.join(COMTRADE_DATASET, filename), "wb") as file:
             pkl.dump(data, file)
-    return data
+    return data, no_key
 
 
 def check_and_eliminate_duplicate(data):
