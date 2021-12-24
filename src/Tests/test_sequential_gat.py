@@ -72,7 +72,7 @@ class TGNN(k.models.Model):
 
 
 class RNNBIL(k.models.Model):
-    def __init__(self, channels=2, attn_heads=10, rnn_units=20, skip_connection=True):
+    def __init__(self, channels=5, attn_heads=3, rnn_units=25, skip_connection=False):
         super(RNNBIL, self).__init__()
         self.skip_connection = skip_connection
         self.attn_heads = attn_heads
@@ -155,10 +155,10 @@ class RNNBIL(k.models.Model):
             self.state_upper = state_upper
         else:
             x_prime_lower, state_lower = self.rnn_lower(
-                tf.expand_dims(x_enc_lower, 0), initial_state=self.state_lower, training=training
+                tf.expand_dims(x_enc_lower, 0), training=training
             )
             x_prime_upper, state_upper = self.rnn_upper(
-                tf.expand_dims(x_enc_upper, 0), initial_state=self.state_upper, training=training
+                tf.expand_dims(x_enc_upper, 0), training=training
             )
             self.state_lower = state_lower
             self.state_upper = state_upper
@@ -172,6 +172,79 @@ class RNNBIL(k.models.Model):
         x_enc, pred_adj = self.decoder_w([x_prime, a])
         # _, pred_sigma = self.decoder_s([x_prime, a])
         return x_enc, pred_adj  # , pred_sigma
+
+
+class RNNBIL2(k.models.Model):
+    def __init__(self, channels=5, attn_heads=3, rnn_units=25, skip_connection=False):
+        super(RNNBIL2, self).__init__()
+        self.skip_connection = skip_connection
+        self.attn_heads = attn_heads
+        self.rnn_units = rnn_units
+        self.channels = channels
+        if self.skip_connection:
+            self.connect = k.layers.Dense(self.channels * self.attn_heads, "relu")
+        self.rnn_lower = k.layers.SimpleRNN(
+            units=self.rnn_units,
+            return_state=True,
+            return_sequences=True,
+            stateful=False,
+            time_major=True,
+            activation="relu",
+            dropout=0.5,
+            recurrent_dropout=0.5,
+            use_bias=True,
+            bias_regularizer="l2",
+            bias_initializer="glorot_normal"
+        )
+        '''self.rnn_upper = k.layers.SimpleRNN(
+            units=self.rnn_units,
+            return_state=True,
+            return_sequences=True,
+            stateful=False,
+            time_major=True,
+            activation="relu",
+            dropout=0.5,
+            recurrent_dropout=0.5,
+            use_bias=True,
+            bias_regularizer="l2",
+            bias_initializer="glorot_normal"
+        )'''
+        self.encoder_lower = GATConv(
+            channels=self.channels,
+            attn_heads=self.attn_heads,
+            add_self_loops=False,
+            activation="relu",
+            concat_heads=True,
+            # kernel_regularizer="l2",
+            # bias_regularizer="l2",
+            use_bias=True
+        )
+        '''self.encoder_upper = GATConv(
+            channels=self.channels,
+            attn_heads=self.attn_heads,
+            add_self_loops=False,
+            activation="relu",
+            concat_heads=True,
+            # kernel_regularizer="l2",
+            # bias_regularizer="l2",
+            use_bias=True
+        )'''
+        self.decoder_w = BilinearDecoderDense(activation="relu", qr=True)
+        # self.decoder_s = BilinearDecoderDense(activation="relu", qr=True)
+        self.ln = LayerNormalization()
+        self.initial = True
+
+    def call(self, inputs, training=None, mask=None):
+        x,a = inputs
+        x_lower = self.encoder_lower([x, a])
+        if self.initial:
+            initial_state = tf.constant(np.zeros(shape=(x.shape[0], self.rnn_units), dtype=np.float32))
+            x_lower = self.rnn_lower(x_lower, initial_state=initial_state)
+        else:
+            x_lower = self.rnn_lower(x_lower)
+
+        a = self.decoder_w([x_lower, a])
+        return x_lower, a
 
 
 class SparseRNNBIL(k.models.Model):
@@ -337,20 +410,21 @@ if __name__ == "__main__":
                     # loss_bin = k.losses.binary_crossentropy(tf.reshape(At[i+1], [-1]), tf.reshape(a_bin, [-1]))
                     # loss += loss_bin
                     tot_loss.append(loss)
-                    grads = tape.gradient(loss, model.trainable_variables)
-                    #optimizer.apply_gradients(zip(grads, model.trainable_variables))
-                    grads_t.append(grads)
+
+                    #grads_t.append(grads)
                     bar.update(1)
+                grads = tape.gradient(loss, model.trainable_variables)
+                optimizer.apply_gradients(zip(grads, model.trainable_variables))
                 model.initial = True
-            grads_sum_t = sum_gradients(grads_t, "sum")
-            grads_b.append(grads_sum_t)
+            #grads_sum_t = sum_gradients(grads_t, "sum")
+            #grads_b.append(grads_sum_t)
             batch_loss.append(tf.reduce_mean(tot_loss))
             embs_b.append(embs_t)
             preds_b.append(preds_t)
         all_embs.append(embs_b)
         all_preds.append(preds_b)
-        grads_mean_b = sum_gradients(grads_b, "mean")
-        optimizer.apply_gradients(zip(grads_mean_b, model.trainable_variables))
+        #grads_mean_b = sum_gradients(grads_b, "mean")
+        #optimizer.apply_gradients(zip(grads_mean_b, model.trainable_variables))
         bl = tf.reduce_mean(batch_loss, 0)
         epoch_batch_loss.append(bl)
 
