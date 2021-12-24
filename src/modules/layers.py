@@ -203,6 +203,45 @@ class BilinearDecoderDense(l.Layer):
             return tf.matmul(Q, W), A
 
 
+class BatchBilinearDecoderDense(l.Layer):
+    """
+    inputs:
+        - X of shape batch x N x d
+        - A of shape batch x N x N
+    outputs: A of shape batch x N x N
+    """
+    def __init__(self, activation="relu", qr=True, regularizer="l2"):
+        super(BatchBilinearDecoderDense, self).__init__()
+        self.activation = activation
+        self.regularizer = regularizer
+        self.qr = qr
+
+    def build(self, input_shape):
+        x, a = input_shape
+        self.R = self.add_weight(
+            shape=(x[-1], x[-1]),
+            initializer="glorot_normal",
+            regularizer=self.regularizer,
+            name="bilinear_matrix"
+        )
+
+    def call(self, inputs, *args, **kwargs):
+        x, a = inputs
+        if self.qr:
+            Q, W = tf.linalg.qr(x, full_matrices=False)
+            W_t = tf.einsum("...jk->...kj", W)
+            Q_t = tf.einsum("...jk->...kj", Q)
+            Z = tf.matmul(tf.matmul(W, self.R), W_t)
+            A = tf.matmul(tf.matmul(Q, Z), Q_t)
+            A = activations.get(self.activation)(A)
+            return tf.matmul(Q,W), A
+        else:
+            x_t = tf.einsum("...jk->...kj", x)
+            mat_left = tf.matmul(x, self.R)
+            A = activations.get(self.activation)(tf.matmul(mat_left, x_t))
+            return x, A
+
+
 class BilinearDecoderSparse(l.Layer):
     def __init__(self, activation="relu", diagonal=False, qr=False, **kwargs):
         super(BilinearDecoderSparse, self).__init__(**kwargs)
