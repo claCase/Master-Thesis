@@ -7,8 +7,13 @@ import tensorflow.keras as k
 from tensorflow.keras.layers import LayerNormalization
 from spektral.layers.convolutional import GATConv
 from src.modules.layers import BilinearDecoderDense, BilinearDecoderSparse
-from src.modules.losses import square_loss, mse_uncertainty, embedding_smoothness, temporal_embedding_smoothness, \
-    DensePenalizedMSE
+from src.modules.losses import (
+    square_loss,
+    mse_uncertainty,
+    embedding_smoothness,
+    temporal_embedding_smoothness,
+    DensePenalizedMSE,
+)
 from src.modules.utils import generate_list_lower_triang, sum_gradients
 from src.modules.models import GAT_BIL_spektral_dense
 import numpy as np
@@ -91,7 +96,7 @@ class RNNBIL(k.models.Model):
             recurrent_dropout=0.5,
             use_bias=True,
             bias_regularizer="l2",
-            bias_initializer="glorot_normal"
+            bias_initializer="glorot_normal",
         )
         self.rnn_upper = k.layers.SimpleRNN(
             units=self.rnn_units,
@@ -104,7 +109,7 @@ class RNNBIL(k.models.Model):
             recurrent_dropout=0.5,
             use_bias=True,
             bias_regularizer="l2",
-            bias_initializer="glorot_normal"
+            bias_initializer="glorot_normal",
         )
         self.encoder_lower = GATConv(
             channels=self.channels,
@@ -114,7 +119,7 @@ class RNNBIL(k.models.Model):
             concat_heads=True,
             # kernel_regularizer="l2",
             # bias_regularizer="l2",
-            use_bias=True
+            use_bias=True,
         )
         self.encoder_upper = GATConv(
             channels=self.channels,
@@ -124,7 +129,7 @@ class RNNBIL(k.models.Model):
             concat_heads=True,
             # kernel_regularizer="l2",
             # bias_regularizer="l2",
-            use_bias=True
+            use_bias=True,
         )
         self.decoder_w = BilinearDecoderDense(activation="relu", qr=True)
         # self.decoder_s = BilinearDecoderDense(activation="relu", qr=True)
@@ -144,12 +149,18 @@ class RNNBIL(k.models.Model):
         x_enc_lower = self.ln(x_enc_lower)
         x_enc_upper = self.ln(x_enc_upper)
         if self.initial:
-            init_state = tf.constant(np.zeros(shape=(x.shape[0], self.rnn_units), dtype=np.float32))
+            init_state = tf.constant(
+                np.zeros(shape=(x.shape[0], self.rnn_units), dtype=np.float32)
+            )
             x_prime_lower, state_lower = self.rnn_lower(
-                tf.expand_dims(x_enc_lower, 0), initial_state=init_state, training=training
+                tf.expand_dims(x_enc_lower, 0),
+                initial_state=init_state,
+                training=training,
             )
             x_prime_upper, state_upper = self.rnn_upper(
-                tf.expand_dims(x_enc_upper, 0), initial_state=init_state, training=training
+                tf.expand_dims(x_enc_upper, 0),
+                initial_state=init_state,
+                training=training,
             )
             self.state_lower = state_lower
             self.state_upper = state_upper
@@ -194,9 +205,9 @@ class RNNBIL2(k.models.Model):
             recurrent_dropout=0.5,
             use_bias=True,
             bias_regularizer="l2",
-            bias_initializer="glorot_normal"
+            bias_initializer="glorot_normal",
         )
-        '''self.rnn_upper = k.layers.SimpleRNN(
+        """self.rnn_upper = k.layers.SimpleRNN(
             units=self.rnn_units,
             return_state=True,
             return_sequences=True,
@@ -208,7 +219,7 @@ class RNNBIL2(k.models.Model):
             use_bias=True,
             bias_regularizer="l2",
             bias_initializer="glorot_normal"
-        )'''
+        )"""
         self.encoder_lower = GATConv(
             channels=self.channels,
             attn_heads=self.attn_heads,
@@ -217,9 +228,9 @@ class RNNBIL2(k.models.Model):
             concat_heads=True,
             # kernel_regularizer="l2",
             # bias_regularizer="l2",
-            use_bias=True
+            use_bias=True,
         )
-        '''self.encoder_upper = GATConv(
+        """self.encoder_upper = GATConv(
             channels=self.channels,
             attn_heads=self.attn_heads,
             add_self_loops=False,
@@ -228,17 +239,19 @@ class RNNBIL2(k.models.Model):
             # kernel_regularizer="l2",
             # bias_regularizer="l2",
             use_bias=True
-        )'''
+        )"""
         self.decoder_w = BilinearDecoderDense(activation="relu", qr=True)
         # self.decoder_s = BilinearDecoderDense(activation="relu", qr=True)
         self.ln = LayerNormalization()
         self.initial = True
 
     def call(self, inputs, training=None, mask=None):
-        x,a = inputs
+        x, a = inputs
         x_lower = self.encoder_lower([x, a])
         if self.initial:
-            initial_state = tf.constant(np.zeros(shape=(x.shape[0], self.rnn_units), dtype=np.float32))
+            initial_state = tf.constant(
+                np.zeros(shape=(x.shape[0], self.rnn_units), dtype=np.float32)
+            )
             x_lower = self.rnn_lower(x_lower, initial_state=initial_state)
         else:
             x_lower = self.rnn_lower(x_lower)
@@ -265,7 +278,7 @@ class SparseRNNBIL(k.models.Model):
             time_major=True,
             activation="relu",
             dropout=0.5,
-            recurrent_dropout=0.5
+            recurrent_dropout=0.5,
         )
         self.encoder = GATConv(
             channels=self.channels,
@@ -275,7 +288,7 @@ class SparseRNNBIL(k.models.Model):
             concat_heads=True,
             kernel_regularizer="l2",
             bias_regularizer="l2",
-            use_bias=True
+            use_bias=True,
         )
 
         self.decoder_w = BilinearDecoderSparse(activation="relu")
@@ -288,7 +301,9 @@ class SparseRNNBIL(k.models.Model):
         x_enc = self.encoder([x, a])
         x_enc = self.ln(x_enc)
         if self.initial:
-            init_state = tf.constant(np.zeros(shape=(x.shape[0], self.rnn_units), dtype=np.float32))
+            init_state = tf.constant(
+                np.zeros(shape=(x.shape[0], self.rnn_units), dtype=np.float32)
+            )
             x_prime, state = self.rnn(
                 tf.expand_dims(x_enc, 0), initial_state=init_state
             )
@@ -309,7 +324,7 @@ class SparseRNNBIL(k.models.Model):
 
 
 if __name__ == "__main__":
-    tf.get_logger().setLevel('INFO')
+    tf.get_logger().setLevel("INFO")
     CUDA_VISIBLE_DEVICES = ""
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
@@ -334,8 +349,8 @@ if __name__ == "__main__":
         At = np.asarray(At, dtype=np.float32)
     else:
         with open(
-                "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
-                "rb",
+            "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
+            "rb",
         ) as file:
             data_np = pkl.load(file)
         data_sp = tf.sparse.SparseTensor(
@@ -377,7 +392,9 @@ if __name__ == "__main__":
         return l0 * np.exp(-decay * i)
 
     batches = np.random.choice(np.arange(At.shape[0] - t), size=batches)
-    bar = tqdm.tqdm(total=epochs * (t-1) * len(batches), position=0, leave=True, desc="Training")
+    bar = tqdm.tqdm(
+        total=epochs * (t - 1) * len(batches), position=0, leave=True, desc="Training"
+    )
     epoch_batch_loss = []
     for i in range(epochs):
         grads_b = []
@@ -386,7 +403,7 @@ if __name__ == "__main__":
         preds_b = []
         embs_b = []
         for b in batches:
-            A_t_b = At[b:b + t]
+            A_t_b = At[b : b + t]
             preds_t = []
             embs_t = []
             tot_loss = []
@@ -411,27 +428,27 @@ if __name__ == "__main__":
                     # loss += loss_bin
                     tot_loss.append(loss)
 
-                    #grads_t.append(grads)
+                    # grads_t.append(grads)
                     bar.update(1)
                 grads = tape.gradient(loss, model.trainable_variables)
                 optimizer.apply_gradients(zip(grads, model.trainable_variables))
                 model.initial = True
-            #grads_sum_t = sum_gradients(grads_t, "sum")
-            #grads_b.append(grads_sum_t)
+            # grads_sum_t = sum_gradients(grads_t, "sum")
+            # grads_b.append(grads_sum_t)
             batch_loss.append(tf.reduce_mean(tot_loss))
             embs_b.append(embs_t)
             preds_b.append(preds_t)
         all_embs.append(embs_b)
         all_preds.append(preds_b)
-        #grads_mean_b = sum_gradients(grads_b, "mean")
-        #optimizer.apply_gradients(zip(grads_mean_b, model.trainable_variables))
+        # grads_mean_b = sum_gradients(grads_b, "mean")
+        # optimizer.apply_gradients(zip(grads_mean_b, model.trainable_variables))
         bl = tf.reduce_mean(batch_loss, 0)
         epoch_batch_loss.append(bl)
 
     plt.plot(epoch_batch_loss)
     plt.xlabel("Epochs")
     plt.ylabel("MSE")
-    #plt.show()
+    # plt.show()
 
     a = np.asarray(all_preds[-1][-1][-1])
 
@@ -452,7 +469,7 @@ if __name__ == "__main__":
     ax[2].set_title("Diff")
     fig.colorbar(d, ax=ax[2], fraction=0.05)
 
-    '''fig, ax = plt.subplots(1, 3, figsize=(6, 15))
+    """fig, ax = plt.subplots(1, 3, figsize=(6, 15))
     t = ax[0].imshow(At[-1])
     ax[0].set_title("True")
     fig.colorbar(t, ax=ax[0], fraction=0.05)
@@ -462,7 +479,7 @@ if __name__ == "__main__":
     d = ax[2].imshow(At[-1] - a[-1][-1])
     ax[2].set_title("Diff")
     fig.colorbar(d, ax=ax[2], fraction=0.05)
-    '''
+    """
     x_tnse = TSNE(n_components=2, perplexity=80).fit_transform(x.numpy())
     clustering = SpectralClustering(n_clusters=10, affinity="nearest_neighbors").fit(
         x_tnse

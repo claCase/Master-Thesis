@@ -6,22 +6,22 @@ import tqdm
 import argparse
 import os
 import pickle as pkl
-from src.modules.layers import BatchBilinearDecoderDense
-from src.modules.utils import sum_gradients
+from src.modules.layers import BatchBilinearDecoderDense, SelfAttention
+from src.modules.utils import sum_gradients, get_positional_encoding_matrix
 from spektral.layers.convolutional import GATConv
 import matplotlib.animation as animation
 
 
 class RnnBil(k.models.Model):
     def __init__(
-        self,
-        gat_channels=5,
-        gat_heads=5,
-        rnn_units=5,
-        activation="relu",
-        dropout_rate=0.5,
-        residual_con=False,
-        rnn_type="rnn"
+            self,
+            gat_channels=5,
+            gat_heads=5,
+            rnn_units=15,
+            activation="relu",
+            dropout_rate=0.5,
+            residual_con=True,
+            rnn_type="rnn",
     ):
         super(RnnBil, self).__init__()
         self.gat_channels = gat_channels
@@ -30,7 +30,6 @@ class RnnBil(k.models.Model):
         self.dropout_rate = dropout_rate
         self.activation = activation
         self.residual_con = residual_con
-        self.initial = True
         self.rnn_type = rnn_type
         if self.rnn_type == "rnn":
             self.rnn = k.layers.SimpleRNN(
@@ -94,13 +93,15 @@ class RnnBil(k.models.Model):
 
 class GatBil(k.models.Model):
     def __init__(
-        self,
-        gat_channels=5,
-        gat_heads=15,
-        activation="relu",
-        dropout_rate=0.5,
-        lag=5,
-        residual_con=True,
+            self,
+            gat_channels=5,
+            gat_heads=10,
+            activation="relu",
+            dropout_rate=0.5,
+            lag=5,
+            residual_con=True,
+            return_attn_coeff=False,
+            rnn_type="transformer"
     ):
         super(GatBil, self).__init__()
         self.gat_channels = gat_channels
@@ -109,14 +110,27 @@ class GatBil(k.models.Model):
         self.activation = activation
         self.lag = lag
         self.residual_con = residual_con
+        self.return_attn_coef = return_attn_coeff
+        self.rnn_type = rnn_type
 
-        self.self_attention = GATConv(
-            channels=self.gat_channels,
-            attn_heads=self.gat_heads,
-            dropout_rate=self.dropout_rate,
-            activation=self.activation,
-            concat_heads=True,
-        )
+        if self.rnn_type == "gat":
+            self.self_attention = GATConv(
+                channels=self.gat_channels,
+                attn_heads=self.gat_heads,
+                dropout_rate=self.dropout_rate,
+                activation=self.activation,
+                concat_heads=True,
+                return_attn_coef=self.return_attn_coef,
+            )
+        elif self.rnn_type == "transformer":
+            self.self_attention = SelfAttention(
+                channels=self.gat_channels,
+                attn_heads=self.gat_heads,
+                dropout_rate=self.dropout_rate,
+                lags=self.lag,
+                return_attn=self.return_attn_coef,
+                concat_heads=True
+            )
         self.encoder = GATConv(
             channels=self.gat_channels,
             attn_heads=self.gat_heads,
@@ -147,15 +161,23 @@ class GatBil(k.models.Model):
         t, n, _ = a.shape
         a_mask = self.generate_list_lower_triang(n, t, self.lag)  # NxTxT
         x_enc = self.encoder([x, a])
-        x_enc = self.ln_enc(x_enc)
+        x_enc = self.ln_enc(x_enc)  # TxNxd
         x_enc_t = tf.transpose(x_enc, (1, 0, 2))  # NxTxd
-        x_rec = self.self_attention([x_enc_t, a_mask])
+        if self.rnn_type == "transformer":
+            a_mask = a
+        if self.return_attn_coef:
+            x_rec, attn_coeff = self.self_attention([x_enc_t, a_mask])
+        else:
+            x_rec = self.self_attention([x_enc_t, a_mask])
         x_rec = self.ln_rec(x_rec)
         x_rec = tf.transpose(x_rec, (1, 0, 2))  # TxNxd
         if self.residual_con:
             x_rec = tf.concat([x_enc, x_rec], -1)
         _, A = self.decoder([x_rec, a])
-        return x_rec, A
+        if self.return_attn_coef:
+            return x_rec, A, attn_coeff
+        else:
+            return x_rec, A
 
 
 if __name__ == "__main__":
@@ -191,8 +213,8 @@ if __name__ == "__main__":
         At = np.asarray(At, dtype=np.float32)
     else:
         with open(
-            "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
-            "rb",
+                "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
+                "rb",
         ) as file:
             data_np = pkl.load(file)
         data_sp = tf.sparse.SparseTensor(
@@ -200,7 +222,9 @@ if __name__ == "__main__":
         )
         data_sp = tf.sparse.reorder(data_sp)
 
-        data_slice = tf.sparse.slice(data_sp, (0, 0, 0, 0), (data_sp.shape[0], 21, n, n))
+        data_slice = tf.sparse.slice(
+            data_sp, (0, 0, 0, 0), (data_sp.shape[0], 1, n, n)
+        )
 
         data_dense = tf.sparse.reduce_sum(data_slice, 1)
         data_dense = tf.math.log(data_dense)
@@ -208,9 +232,16 @@ if __name__ == "__main__":
         # At = At[1:] - At[:-1]
         # At = np.diff(At.numpy(), 0)[:-1]
 
-    # pos = _get_positional_encoding_matrix(t, n)
+    pos = get_positional_encoding_matrix(data_sp.shape[0], n)  # TxN
+    # pos = np.expand_dims(pos, 1)
     Xt = [np.eye(n)] * data_sp.shape[0]
-    Xt = np.asarray(Xt, dtype=np.float32)
+    Xt = np.asarray(Xt, dtype=np.float32)  # TxNxN
+    '''X = np.empty(shape=(data_sp.shape[0], n, 2*n))
+    #Xt = np.add(Xt, pos)
+    for i, x in enumerate(Xt):
+        pos_tile = np.tile(pos[i], n).reshape(-1, n)
+        X[i] = np.concatenate([Xt[i], pos_tile], -1)
+    Xt = X'''
     Xt_train = Xt[:-1]
 
     # Train & Test Edge Masking
@@ -223,33 +254,46 @@ if __name__ == "__main__":
     At_test_in = At[:-1] * test_mask[:-1]
     At_test_out = At[1:] * test_mask[1:]
 
+    dropout_rate = 0.1
     if rnn_type == "gat":
-        model = GatBil(lag=6, residual_con=False, dropout_rate=0.1)
+        model = GatBil(
+            lag=50, residual_con=True, dropout_rate=dropout_rate, return_attn_coeff=True, rnn_type="transformer"
+        )
     elif rnn_type == "rnn":
-        model = RnnBil(rnn_type="rnn")
+        model = RnnBil(rnn_type="rnn", dropout_rate=dropout_rate)
     elif rnn_type == "lstm":
-        model = RnnBil(rnn_type="lstm")
+        model = RnnBil(rnn_type="lstm", dropout_rate=dropout_rate)
     elif rnn_type == "gru":
-        model = RnnBil(rnn_type="gru")
+        model = RnnBil(rnn_type="gru", dropout_rate=dropout_rate)
     else:
         raise TypeError(f"No rnn of type {rnn_type} found")
 
-    #from_time = np.asarray([np.random.choice(np.arange(60 - t - 1), size=(60-t-1), replace=False) for _ in range(epochs)])
-    #from_time = np.tile(np.arange(batch_size)+10, epochs).reshape(epochs, -1)
-    #to_time = from_time + t
+    # from_time = np.asarray([np.random.choice(np.arange(60 - t - 1), size=(60-t-1), replace=False) for _ in range(epochs)])
+    # from_time = np.tile(np.arange(batch_size)+10, epochs).reshape(epochs, -1)
+    # to_time = from_time + t
     optimizer = k.optimizers.Adam(0.0005)
     loss_hist = []
     bar = tqdm.tqdm(total=epochs, leave=True)
     for i in range(epochs):
-        '''batch_grad = []
+        """batch_grad = []
         batch_loss = []
-        for b in range(batch_size):'''
+        for b in range(batch_size):"""
         with tf.GradientTape() as tape:
-            f = 0#from_time[i, b]
-            t = 60 #to_time[i, b]
-            x_train, a_train = model([Xt_train[f:t], At_train_in[f:t]])
+            f = 10  # from_time[i, b]
+            t = 60  # to_time[i, b]
+            if rnn_type == "gat":
+                x_train, a_train, attn_coeff_train = model(
+                    [Xt_train[f:t], At_train_in[f:t]]
+                )
+            else:
+                x_train, a_train = model([Xt_train[f:t], At_train_in[f:t]])
+            if rnn_type == "gat":
+                x_test, a_test, attn_coeff_test = model(
+                    [Xt_train[f:t], At_test_in[f:t]]
+                )
+            else:
+                x_test, a_test = model([Xt_train[f:t], At_test_in[f:t]])
             a_train = a_train * train_mask[1:][f:t]
-            x_test, a_test = model([Xt_train[f:t], At_test_in[f:t]])
             a_test = a_test * test_mask[1:][f:t]
             At_flat_train = tf.reshape(At_train_out[f:t], [-1])
             a_flat_train = tf.reshape(a_train, [-1])
@@ -258,20 +302,32 @@ if __name__ == "__main__":
             loss_train = k.losses.mean_squared_error(At_flat_train, a_flat_train)
             loss_test = k.losses.mean_squared_error(At_flat_test, a_flat_test)
             # loss_hist.append((loss_train, loss_test))
-            #batch_loss.append((loss_train, loss_test))
+            # batch_loss.append((loss_train, loss_test))
             grads = tape.gradient(loss_train, model.trainable_weights)
-            #batch_grad.append(grads)
+            # batch_grad.append(grads)
             optimizer.apply_gradients(zip(grads, model.trainable_weights))
-        #mean_grads = sum_gradients(batch_grad, "mean")
-        #loss_hist.append(np.mean(batch_loss, 0))
+        # mean_grads = sum_gradients(batch_grad, "mean")
+        # loss_hist.append(np.mean(batch_loss, 0))
         loss_hist.append((loss_train, loss_test))
-        #optimizer.apply_gradients(zip(mean_grads, model.trainable_weights))
+        # optimizer.apply_gradients(zip(mean_grads, model.trainable_weights))
         bar.update(1)
 
     model.save_weights("./RNN-GATBIL/Model")
     losses = plt.plot(loss_hist)
     plt.legend(iter(losses), ("Train", "Test"))
+
+    if rnn_type == "gat":
+        row, col = 2, 2
+        fig2, axs = plt.subplots(row, col)
+        mean_attn = np.mean(attn_coeff_train.numpy(), axis=1)
+        counter = 0
+        for i in range(row):
+            for j in range(col):
+                axs[i, j].imshow(mean_attn[counter])
+                counter += 1
+
     fig, ax = plt.subplots(1, 2)
+
 
     def update(i):
         ax[0].clear()
@@ -281,15 +337,31 @@ if __name__ == "__main__":
         t = ax[0].imshow(a_train[i], animated=True)
         ax[1].set_title("True")
         p = ax[1].imshow(At_train_out[i], animated=True)
-        # fig.colorbar(t, ax=ax[0], fraction=0.05)
-        # fig.colorbar(p, ax=ax[1], fraction=0.05)
+
 
     anim = animation.FuncAnimation(fig, update, frames=len(a_train) - 1, repeat=True)
-    '''writer = animation.FFMpegWriter(50)
+
+    fig1, ax1 = plt.subplots(1, 1)
+
+
+    def update2(i):
+        ax1.clear()
+        fig1.suptitle(f"Year {10 + i}")
+        a_pred = a_train[i].numpy().flatten()
+        a_pred = a_pred[a_pred > 0.5]
+        a_true = At_train_out[i].numpy().flatten()
+        a_true = a_true[a_true > 0.5]
+        ax1.hist(a_true, bins=60, alpha=0.5, color="blue", density=True, label="True")
+        ax1.hist(a_pred, bins=60, alpha=0.5, color="red", density=True, label="Pred")
+        ax1.legend()
+
+
+    anim2 = animation.FuncAnimation(fig1, update2, frames=len(a_train) - 1, repeat=True)
+
+    """writer = animation.FFMpegWriter(50)
     anim.save(
         "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\src\\Tests\\Figures\\RNN-GATBIL\\animation.gif",
         writer="pillow",
-    )'''
+    )"""
     # print("mp4 saved to {}".format(os.path.join("./animation.mp4")))
-
     plt.show()
