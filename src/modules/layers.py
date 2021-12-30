@@ -12,7 +12,7 @@ from scipy.sparse.csgraph import laplacian
 import scipy.sparse.linalg
 from networkx.linalg import directed_laplacian_matrix
 from src.modules.utils import add_self_loop
-
+from src.modules.utils import generate_list_lower_triang
 
 # physical_devices = tf.config.list_physical_devices('GPU')
 
@@ -210,6 +210,7 @@ class BatchBilinearDecoderDense(l.Layer):
         - A of shape batch x N x N
     outputs: A of shape batch x N x N
     """
+
     def __init__(self, activation="relu", qr=True, regularizer="l2"):
         super(BatchBilinearDecoderDense, self).__init__()
         self.activation = activation
@@ -222,7 +223,7 @@ class BatchBilinearDecoderDense(l.Layer):
             shape=(x[-1], x[-1]),
             initializer="glorot_normal",
             regularizer=self.regularizer,
-            name="bilinear_matrix"
+            name="bilinear_matrix",
         )
 
     def call(self, inputs, *args, **kwargs):
@@ -234,7 +235,7 @@ class BatchBilinearDecoderDense(l.Layer):
             Z = tf.matmul(tf.matmul(W, self.R), W_t)
             A = tf.matmul(tf.matmul(Q, Z), Q_t)
             A = activations.get(self.activation)(A)
-            return tf.matmul(Q,W), A
+            return tf.matmul(Q, W), A
         else:
             x_t = tf.einsum("...jk->...kj", x)
             mat_left = tf.matmul(x, self.R)
@@ -264,10 +265,10 @@ class BilinearDecoderSparse(l.Layer):
 
     def call(self, inputs, **kwargs):
         X, A = inputs
-        '''if self.qr:
+        """if self.qr:
             Q, W = tf.linalg.qr(X, full_matrices=False)
             Z = tf.matmul(tf.matmul(W, self.R), W, transpose_b=True)
-            A = tf.matmul(tf.matmul(Q, Z), Q, transpose_b=True)'''
+            A = tf.matmul(tf.matmul(Q, Z), Q, transpose_b=True)"""
         i, j = A.indices[:, 0], A.indices[:, 1]
         e1 = tf.gather(X, i)
         e2 = tf.gather(X, j)
@@ -277,6 +278,63 @@ class BilinearDecoderSparse(l.Layer):
             A_pred = activations.get(self.activation)(right)
         A_pred = tf.sparse.SparseTensor(A.indices, A_pred, A.shape)
         return X, A_pred
+
+
+class SelfAttention(l.Layer):
+    def __init__(
+            self,
+            channels=10,
+            attn_heads=5,
+            dropout_rate=0.5,
+            lags=10,
+            concat_heads=False,
+            return_attn=False
+    ):
+        super(SelfAttention, self).__init__()
+        self.channels = channels
+        self.attn_heads = attn_heads
+        self.dropout_rate = dropout_rate
+        self.lags = lags
+        self.concat_heads = concat_heads
+        self.return_attn = return_attn
+
+    def build(self, input_shape):
+        """
+        Inputs: X, A
+            - X: shape(TxNxd)
+            - A: shape(TxNxN)
+        """
+        x, a = input_shape
+        self.q_w = self.add_weight(name="query", shape=(self.attn_heads, x[-1], self.channels))
+        self.k_w = self.add_weight(name="key", shape=(self.attn_heads, x[-1], self.channels))
+        self.v_w = self.add_weight(name="value", shape=(self.attn_heads, x[-1], self.channels))
+        self.temp_masking = tf.transpose(tf.where(tf.constant(
+            [generate_list_lower_triang(a[-1], a[0], self.lags)]*self.attn_heads
+        ) ==0.0, -1e10, 0), perm=(1,0,2,3))
+        if self.dropout_rate:
+            self.drop = l.Dropout(self.dropout_rate)
+
+    def call(self, inputs, *args, **kwargs):
+        x, a = inputs
+        query = tf.einsum("ntd,hdo->ntho", x, self.q_w)
+        key = tf.einsum("ntd,hdo->ntho", x, self.k_w)
+        value = tf.einsum("ntd,hdo->ntho", x, self.v_w)
+        qk = tf.einsum("ntho,nzho->nhtz", query, key)
+        qk /= tf.sqrt(tf.cast(self.channels, tf.float32))
+        qk += self.temp_masking
+        soft_qk = tf.nn.softmax(qk, axis=-1)
+        if self.dropout_rate:
+            soft_qk = self.drop(soft_qk)
+        x_prime = tf.einsum("nhtz,nzho->nhto", soft_qk, value)
+        if self.concat_heads:
+            x_prime = tf.transpose(x_prime, (0,2,1,3))  # NxTxHxO
+            x_prime = tf.reshape(x_prime, (*tf.shape(x_prime)[:-2], -1))  # NxTxHO
+        else:
+            x_prime = tf.reduce_mean(x_prime, axis=1)
+            x_prime = tf.squeeze(x_prime)  # NxTxO
+        if self.return_attn:
+            return x_prime, soft_qk
+        return x_prime
 
 
 class FlatDecoderSparse(l.Layer):

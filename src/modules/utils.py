@@ -194,6 +194,20 @@ def sum_gradients(grads_t, reduce="mean"):
             g = tf.reduce_mean(v, 0)
         if reduce == "sum":
             g = tf.reduce_sum(v, 0)
-        g = tf.squeeze(g,0)
+        g = tf.squeeze(g, 0)
         grad_vars[i] = g
     return grad_vars
+
+
+def get_positional_encoding_matrix(max_len, d_emb):
+    pos_enc = np.array(
+        [
+            [pos / np.power(10000, 2 * (j // 2) / d_emb) for j in range(d_emb)]
+            if pos != 0
+            else np.zeros(d_emb)
+            for pos in range(max_len)
+        ]
+    )
+    pos_enc[1:, 0::2] = np.sin(pos_enc[1:, 0::2])  # dim 2i
+    pos_enc[1:, 1::2] = np.cos(pos_enc[1:, 1::2])  # dim 2i+1
+    return pos_enc

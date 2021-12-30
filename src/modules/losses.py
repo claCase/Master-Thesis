@@ -1,23 +1,26 @@
 import numpy as np
 import tensorflow as tf
 import tensorflow.keras.layers as l
-#from math import pi
+
+# from math import pi
 
 
 @tf.function
-def square_loss(y_true, y_pred, test_mask=None, no_diag=True, random_mask=False, zero_mask=False):
+def square_loss(
+    y_true, y_pred, test_mask=None, no_diag=False, random_mask=False, zero_mask=False
+):
     if isinstance(y_true, tf.sparse.SparseTensor) and isinstance(
-            y_pred, tf.sparse.SparseTensor
+        y_pred, tf.sparse.SparseTensor
     ):
         diff = tf.square(y_true.values - y_pred.values)
         return tf.reduce_mean(diff)
 
     if isinstance(y_true, tf.Tensor) and isinstance(y_pred, tf.Tensor):
-        '''if zero_mask:
-            no_zero_edges = tf.where(y_true == 0., 0., 1.)
-            no_zero_edges = tf.cast(no_zero_edges, tf.float32)
-            #diff *= no_zero_edges
-            y_pred *= no_zero_edges'''
+        """if zero_mask:
+        no_zero_edges = tf.where(y_true == 0., 0., 1.)
+        no_zero_edges = tf.cast(no_zero_edges, tf.float32)
+        #diff *= no_zero_edges
+        y_pred *= no_zero_edges"""
 
         if no_diag:
             no_diag = tf.ones_like(y_pred) - tf.linalg.diag(tf.ones(y_pred.shape[0]))
@@ -28,7 +31,9 @@ def square_loss(y_true, y_pred, test_mask=None, no_diag=True, random_mask=False,
             diff *= test_mask
 
         if random_mask:
-            random_mask = tf.constant(np.random.choice((0,1), size=(y_true.shape)), dtype=tf.float32)
+            random_mask = tf.constant(
+                np.random.choice((0, 1), size=(y_true.shape)), dtype=tf.float32
+            )
             diff *= random_mask
         return tf.reduce_mean(diff, (0, 1))
 
@@ -55,11 +60,11 @@ def nll(y_true, mu, sigma):
         mu, tf.sparse.SparseTensor
     )
     nll = (
-            -tf.reduce_mean(
-                tf.math.square(y_true.values - mu.values) / tf.math.square(sigma.values)
-                + tf.math.log(tf.math.square(sigma.values))
-            )
-            * 0.5
+        -tf.reduce_mean(
+            tf.math.square(y_true.values - mu.values) / tf.math.square(sigma.values)
+            + tf.math.log(tf.math.square(sigma.values))
+        )
+        * 0.5
     )
     # print(f"loss shape: {nll.shape}")
     return nll
@@ -79,9 +84,9 @@ def binary_cross_entropy(y_true, p):
 # @tf.function
 def mixed_discrete_continuous_nll_sparse(y_true, mu, p):
     assert (
-            isinstance(y_true, tf.sparse.SparseTensor)
-            and isinstance(mu, tf.sparse.SparseTensor)
-            and isinstance(p, tf.sparse.SparseTensor)
+        isinstance(y_true, tf.sparse.SparseTensor)
+        and isinstance(mu, tf.sparse.SparseTensor)
+        and isinstance(p, tf.sparse.SparseTensor)
     )
 
     non_zero_edges = tf.where(y_true.values != 0)
@@ -187,12 +192,14 @@ class DensePenalizedMSE(l.Layer):
 
     def build(self, input_shape):
         y_true, y_pred = input_shape
-        self.B = self.add_variable(name="loss_B", shape=(y_true), initializer="glorot_normal")
+        self.B = self.add_variable(
+            name="loss_B", shape=(y_true), initializer="glorot_normal"
+        )
 
     def call(self, inputs, *args, **kwargs):
         y_true, y_pred = inputs
         diff = y_true - y_pred
-        select_non_zero = tf.where(y_true > 0, tf.abs(self.B)+1, 1.)
+        select_non_zero = tf.where(y_true > 0, tf.abs(self.B) + 1, 1.0)
         diff_penalized = tf.multiply(diff, select_non_zero)
         diff_penalized = tf.reduce_mean(tf.square(diff_penalized), (0, 1))
         return diff_penalized
@@ -200,4 +207,6 @@ class DensePenalizedMSE(l.Layer):
 
 @tf.function
 def mse_uncertainty(y_true, mu, sigma):
-    return tf.reduce_mean(tf.square(y_true - mu) * tf.exp(-sigma)*0.5 + 0.5*sigma, (0,1))
+    return tf.reduce_mean(
+        tf.square(y_true - mu) * tf.exp(-sigma) * 0.5 + 0.5 * sigma, (0, 1)
+    )
