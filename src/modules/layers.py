@@ -14,6 +14,7 @@ from networkx.linalg import directed_laplacian_matrix
 from src.modules.utils import add_self_loop
 from src.modules.utils import generate_list_lower_triang
 
+
 # physical_devices = tf.config.list_physical_devices('GPU')
 
 # tf.config.experimental.set_memory_growth(physical_devices[0], True)
@@ -94,7 +95,7 @@ class Bilinear(l.Layer):
         return self.X, A"""
 
     def __init__(
-        self, hidden_dim=5, activation=None, dropout_rate=0.5, qr=True, **kwargs
+            self, hidden_dim=5, activation=None, dropout_rate=0.5, qr=True, **kwargs
     ):
         super(Bilinear, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
@@ -301,33 +302,45 @@ class SelfAttention(l.Layer):
     def build(self, input_shape):
         """
         Inputs: X, A
-            - X: shape(TxNxd)
-            - A: shape(TxNxN)
+            - X: shape(NxTxd)
+            #- A: shape(TxNxN)
+            - A: shape(NxTxT)
         """
         x, a = input_shape
         self.q_w = self.add_weight(name="query", shape=(self.attn_heads, x[-1], self.channels))
         self.k_w = self.add_weight(name="key", shape=(self.attn_heads, x[-1], self.channels))
         self.v_w = self.add_weight(name="value", shape=(self.attn_heads, x[-1], self.channels))
-        self.temp_masking = tf.transpose(tf.where(tf.constant(
-            [generate_list_lower_triang(a[-1], a[0], self.lags)]*self.attn_heads
-        ) ==0.0, -1e10, 0), perm=(1,0,2,3))
+        '''self.temp_masking = tf.transpose(tf.where(tf.constant(
+            [generate_list_lower_triang(a[0], a[-1], self.lags)] * self.attn_heads
+        ) == 0.0, -1e10, 0), perm=(1, 0, 2, 3))'''
         if self.dropout_rate:
             self.drop = l.Dropout(self.dropout_rate)
 
     def call(self, inputs, *args, **kwargs):
+        """
+        query=key=value:
+            - n: nodes if time series or batch size
+            - t: time dim if time series or number of nodes
+            - d: input embedding dimension
+            - o: output embedding dimension
+            - h: number of heads
+        x=input embedding of shape NxTxd
+        a=input adjacency matrix of shape NxTxT
+            -
+        """
         x, a = inputs
         query = tf.einsum("ntd,hdo->ntho", x, self.q_w)
         key = tf.einsum("ntd,hdo->ntho", x, self.k_w)
         value = tf.einsum("ntd,hdo->ntho", x, self.v_w)
         qk = tf.einsum("ntho,nzho->nhtz", query, key)
         qk /= tf.sqrt(tf.cast(self.channels, tf.float32))
-        qk += self.temp_masking
+        qk += tf.transpose([tf.where(a == 0, -1e-10, 0.0)] * self.attn_heads, perm=(1, 0, 2, 3))  # NxHxTxT
         soft_qk = tf.nn.softmax(qk, axis=-1)
         if self.dropout_rate:
             soft_qk = self.drop(soft_qk)
         x_prime = tf.einsum("nhtz,nzho->nhto", soft_qk, value)
         if self.concat_heads:
-            x_prime = tf.transpose(x_prime, (0,2,1,3))  # NxTxHxO
+            x_prime = tf.transpose(x_prime, (0, 2, 1, 3))  # NxTxHxO
             x_prime = tf.reshape(x_prime, (*tf.shape(x_prime)[:-2], -1))  # NxTxHO
         else:
             x_prime = tf.reduce_mean(x_prime, axis=1)
@@ -617,8 +630,8 @@ class RGHAT(l.Layer):
     """
 
     def __init__(
-        self,
-        **kwargs,
+            self,
+            **kwargs,
     ):
         super(RGHAT, self).__init__(**kwargs)
         pass
@@ -674,14 +687,14 @@ class GAIN(l.Layer):
 
 class GAT(l.Layer):
     def __init__(
-        self,
-        hidden_dim,
-        dropout_rate=0.5,
-        activation="relu",
-        add_identity=False,
-        add_bias=True,
-        return_attention=False,
-        **kwargs,
+            self,
+            hidden_dim,
+            dropout_rate=0.5,
+            activation="relu",
+            add_identity=False,
+            add_bias=True,
+            return_attention=False,
+            **kwargs,
     ):
         """
         Implementation of Graph Atttention Networks: https://arxiv.org/pdf/2102.07200.pdf
@@ -837,7 +850,7 @@ class GCNDirected(l.Layer):
     """
 
     def __init__(
-        self, hidden_dim, activation="relu", dropout_rate=0.5, layer=0, **kwargs
+            self, hidden_dim, activation="relu", dropout_rate=0.5, layer=0, **kwargs
     ):
         super(GCNDirected, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
@@ -1016,14 +1029,14 @@ class RGAT(l.Layer):
     """
 
     def __init__(
-        self,
-        hidden_dim=10,
-        input_transform_activation=None,
-        scoring_activation="sigmoid",
-        attention_scoring_type="bilinear",
-        ego_aggregation_type="bi_interaction",
-        architecture="arkg",
-        **kwargs,
+            self,
+            hidden_dim=10,
+            input_transform_activation=None,
+            scoring_activation="sigmoid",
+            attention_scoring_type="bilinear",
+            ego_aggregation_type="bi_interaction",
+            architecture="arkg",
+            **kwargs,
     ):
         super(RGAT, self).__init__(**kwargs)
         self.hidden_dim = hidden_dim
@@ -1061,11 +1074,11 @@ class RGAT(l.Layer):
 
 class AttentionBasedRelationPrediction(l.Layer):
     def __init__(
-        self,
-        nodes_embedding_dim,
-        relations_embedding_dim,
-        edge_embedding_dim,
-        edge_activation="relu",
+            self,
+            nodes_embedding_dim,
+            relations_embedding_dim,
+            edge_embedding_dim,
+            edge_activation="relu",
     ):
         super(AttentionBasedRelationPrediction, self).__init__()
         self.nodes_embedding_dim = nodes_embedding_dim
