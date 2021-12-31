@@ -163,8 +163,6 @@ class GatBil(k.models.Model):
         x_enc = self.encoder([x, a])
         x_enc = self.ln_enc(x_enc)  # TxNxd
         x_enc_t = tf.transpose(x_enc, (1, 0, 2))  # NxTxd
-        if self.rnn_type == "transformer":
-            a_mask = a
         if self.return_attn_coef:
             x_rec, attn_coeff = self.self_attention([x_enc_t, a_mask])
         else:

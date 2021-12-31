@@ -5,6 +5,7 @@ from spektral.layers.convolutional import GATConv
 import numpy as np
 import matplotlib.pyplot as plt
 import tqdm
+from src.modules.layers import SelfAttention
 
 
 def _get_positional_encoding_matrix(max_len, d_emb):
@@ -29,9 +30,9 @@ def generate_list_lower_triang(batch, t, lag):
     return np.asarray([lower_adj] * batch)
 
 
-n_nodes = 150
+n_nodes = 10
 f_dim = 2
-t = 140
+t = 20
 pos = _get_positional_encoding_matrix(t, f_dim)
 # drift = np.random.uniform(0, 1, size=(n_nodes, 2))
 d = 0.0
@@ -57,12 +58,21 @@ axes[0].set_title("True Trajectories")
 for n in range(n_nodes):
     nodes_trajectories[n, :, 2:] = pos
 
-gat = GATConv(
+'''gat = GATConv(
     channels=10,
     attn_heads=2,
     dropout_rate=0.5,
     concat_heads=False,
     add_self_loops=False,
+    return_attn_coef=True
+)
+'''
+gat = SelfAttention(
+    channels=10,
+    attn_heads=2,   
+    dropout_rate=0.5,
+    concat_heads=False,
+    return_attn=True
 )
 o = k.layers.Dense(2, None)
 optimizer = k.optimizers.RMSprop(0.001)
@@ -73,7 +83,7 @@ epochs = 1000
 proc = tqdm.tqdm(total=epochs, position=0, leave=False, desc="Training GAT")
 for i in range(epochs):
     with tf.GradientTape() as tape:
-        X = gat([nodes_trajectories[:, :-1, :], nodes_lower_adj[:, :-1, :-1]])
+        X, attn = gat([nodes_trajectories[:, :-1, :], nodes_lower_adj[:, :-1, :-1]])
         X = o(X)
         loss = l(nodes_trajectories[:, 1:, :2], X)
         loss_hist.append(loss)
@@ -89,6 +99,8 @@ axes[1].set_title("Gat Prediction")
 for i in range(n_nodes):
     axes[1].plot(X[i, :, 0], X[i, :, 1])
 
+plt.figure()
+plt.imshow(attn[0,0])
 i = k.Input(shape=(None, f_dim * 2), batch_size=n_nodes)
 lstm = LSTM(10, return_sequences=True, dropout=0.5)(i)
 o = TimeDistributed(k.layers.Dense(2))(lstm)
