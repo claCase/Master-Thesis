@@ -320,7 +320,7 @@ class SelfAttention(l.Layer):
         """
         query=key=value:
             - n: nodes if time series or batch size
-            - t: time dim if time series or number of nodes
+            - t: time dim if time series or number of nodes if n=batch size
             - d: input embedding dimension
             - o: output embedding dimension
             - h: number of heads
@@ -334,7 +334,7 @@ class SelfAttention(l.Layer):
         value = tf.einsum("ntd,hdo->ntho", x, self.v_w)
         qk = tf.einsum("ntho,nzho->nhtz", query, key)
         qk /= tf.sqrt(tf.cast(self.channels, tf.float32))
-        qk += tf.transpose([tf.where(a == 0, -1e-10, 0.0)] * self.attn_heads, perm=(1, 0, 2, 3))  # NxHxTxT
+        qk += tf.transpose([tf.where(a == 0.0, -1e10, 0.0)] * self.attn_heads, perm=(1, 0, 2, 3))  # NxHxTxT
         soft_qk = tf.nn.softmax(qk, axis=-1)
         if self.dropout_rate:
             soft_qk = self.drop(soft_qk)
