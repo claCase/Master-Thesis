@@ -8,6 +8,7 @@ import os
 import pickle as pkl
 from src.modules.layers import BatchBilinearDecoderDense, SelfAttention
 from src.modules.utils import sum_gradients, get_positional_encoding_matrix
+from src.modules.losses import TemporalSmoothness
 from spektral.layers.convolutional import GATConv
 import matplotlib.animation as animation
 
@@ -19,6 +20,7 @@ class RnnBil(k.models.Model):
             gat_heads=5,
             rnn_units=15,
             activation="relu",
+            output_activation="relu",
             dropout_rate=0.5,
             residual_con=True,
             rnn_type="rnn",
@@ -29,6 +31,7 @@ class RnnBil(k.models.Model):
         self.rnn_units = rnn_units
         self.dropout_rate = dropout_rate
         self.activation = activation
+        self.output_activation = output_activation
         self.residual_con = residual_con
         self.rnn_type = rnn_type
         if self.rnn_type == "rnn":
@@ -68,7 +71,7 @@ class RnnBil(k.models.Model):
             activation=self.activation,
             concat_heads=True,
         )
-        self.decoder = BatchBilinearDecoderDense(activation=self.activation, qr=True)
+        self.decoder = BatchBilinearDecoderDense(activation=self.output_activation, qr=True)
         self.ln_enc = k.layers.LayerNormalization()
         self.ln_rnn = k.layers.LayerNormalization()
 
@@ -97,6 +100,7 @@ class GatBil(k.models.Model):
             gat_channels=5,
             gat_heads=10,
             activation="relu",
+            output_activation="relu",
             dropout_rate=0.5,
             lag=5,
             residual_con=True,
@@ -108,6 +112,7 @@ class GatBil(k.models.Model):
         self.gat_heads = gat_heads
         self.dropout_rate = dropout_rate
         self.activation = activation
+        self.output_activation = output_activation
         self.lag = lag
         self.residual_con = residual_con
         self.return_attn_coef = return_attn_coeff
@@ -138,7 +143,7 @@ class GatBil(k.models.Model):
             activation=self.activation,
             concat_heads=True,
         )
-        self.decoder = BatchBilinearDecoderDense(activation=self.activation, qr=False)
+        self.decoder = BatchBilinearDecoderDense(activation=self.output_activation, qr=True)
         self.ln_enc = k.layers.LayerNormalization(axis=-1)
         self.ln_rec = k.layers.LayerNormalization(axis=-1)
 
@@ -182,17 +187,21 @@ if __name__ == "__main__":
     tf.get_logger().setLevel("INFO")
     CUDA_VISIBLE_DEVICES = ""
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    os.chdir("../../")
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--synthetic", action="store_true")
     parser.add_argument("--t", type=int, default=15)
     parser.add_argument("--n", type=int, default=174)
     parser.add_argument("--batch_size", type=int, default=25)
-    parser.add_argument("--epochs", type=int, default=120)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--train", type=float, default=0.8)
     parser.add_argument("--sparse", action="store_true")
     parser.add_argument("--save", action="store_true")
     parser.add_argument("--rnn_type", type=str, default="gat")
+    parser.add_argument("--lag", type=int, default=50)
+    parser.add_argument("--binary", action="store_true")
+    parser.add_argument("--smooth", type=str, default="euclidian")
     args = parser.parse_args()
     synthetic = args.synthetic
     t = args.t
@@ -203,15 +212,23 @@ if __name__ == "__main__":
     train_perc = args.train
     save = args.save
     rnn_type = args.rnn_type
-
+    lag = args.lag
+    binary = args.binary
+    smoothness = args.smooth
+    if binary:
+        output_activation = "sigmoid"
+    else:
+        output_activation = "relu"
     if synthetic:
         input_shape_nodes = (t, n, n)
         input_shape_adj = (t, n, n)
         At = np.random.choice((0, 1), size=input_shape_adj)
-        At = np.asarray(At, dtype=np.float32)
+        if not binary:
+            At = np.asarray(At, dtype=np.float32)
     else:
+
         with open(
-                "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
+                os.path.join(os.getcwd(), "Data", "complete_data_final_transformed_no_duplicate.pkl"),
                 "rb",
         ) as file:
             data_np = pkl.load(file)
@@ -221,12 +238,14 @@ if __name__ == "__main__":
         data_sp = tf.sparse.reorder(data_sp)
 
         data_slice = tf.sparse.slice(
-            data_sp, (0, 0, 0, 0), (data_sp.shape[0], 1, n, n)
+            data_sp, (0, 0, 0, 0), (data_sp.shape[0], 31, n, n)
         )
 
         data_dense = tf.sparse.reduce_sum(data_slice, 1)
         data_dense = tf.math.log(data_dense)
         At = tf.clip_by_value(data_dense, 0.0, 1e12)
+        if binary:
+            At = tf.constant(np.where(At == 0.0, 0.0, 1.0), dtype=tf.float32)
         # At = At[1:] - At[:-1]
         # At = np.diff(At.numpy(), 0)[:-1]
 
@@ -252,72 +271,117 @@ if __name__ == "__main__":
     At_test_in = At[:-1] * test_mask[:-1]
     At_test_out = At[1:] * test_mask[1:]
 
-    dropout_rate = 0.1
-    if rnn_type == "gat":
-        model = GatBil(
-            lag=50, residual_con=True, dropout_rate=dropout_rate, return_attn_coeff=True, rnn_type="transformer"
-        )
-    elif rnn_type == "rnn":
-        model = RnnBil(rnn_type="rnn", dropout_rate=dropout_rate)
-    elif rnn_type == "lstm":
-        model = RnnBil(rnn_type="lstm", dropout_rate=dropout_rate)
-    elif rnn_type == "gru":
-        model = RnnBil(rnn_type="gru", dropout_rate=dropout_rate)
-    else:
-        raise TypeError(f"No rnn of type {rnn_type} found")
+    def train(temp_loss=True, rnn_type="gat", binary=False):
+        dropout_rate = 0.1
+        if rnn_type == "gat":
+            model = GatBil(
+                lag=lag, residual_con=False, dropout_rate=dropout_rate, return_attn_coeff=True, rnn_type="gat",
+                output_activation=output_activation
+            )
+        elif rnn_type == "transformer":
+            model = GatBil(
+                lag=lag, residual_con=False, dropout_rate=dropout_rate, return_attn_coeff=True, rnn_type="transformer",
+                output_activation=output_activation
+            )
+        elif rnn_type == "rnn":
+            model = RnnBil(rnn_type="rnn", dropout_rate=dropout_rate)
+        elif rnn_type == "lstm":
+            model = RnnBil(rnn_type="lstm", dropout_rate=dropout_rate)
+        elif rnn_type == "gru":
+            model = RnnBil(rnn_type="gru", dropout_rate=dropout_rate)
+        else:
+            raise TypeError(f"No rnn of type {rnn_type} found")
 
-    # from_time = np.asarray([np.random.choice(np.arange(60 - t - 1), size=(60-t-1), replace=False) for _ in range(epochs)])
-    # from_time = np.tile(np.arange(batch_size)+10, epochs).reshape(epochs, -1)
-    # to_time = from_time + t
-    optimizer = k.optimizers.Adam(0.0005)
-    loss_hist = []
-    bar = tqdm.tqdm(total=epochs, leave=True)
-    for i in range(epochs):
-        """batch_grad = []
-        batch_loss = []
-        for b in range(batch_size):"""
-        with tf.GradientTape() as tape:
-            f = 10  # from_time[i, b]
-            t = 60  # to_time[i, b]
-            if rnn_type == "gat":
-                x_train, a_train, attn_coeff_train = model(
-                    [Xt_train[f:t], At_train_in[f:t]]
-                )
-            else:
-                x_train, a_train = model([Xt_train[f:t], At_train_in[f:t]])
-            if rnn_type == "gat":
-                x_test, a_test, attn_coeff_test = model(
-                    [Xt_train[f:t], At_test_in[f:t]]
-                )
-            else:
-                x_test, a_test = model([Xt_train[f:t], At_test_in[f:t]])
-            a_train = a_train * train_mask[1:][f:t]
-            a_test = a_test * test_mask[1:][f:t]
-            At_flat_train = tf.reshape(At_train_out[f:t], [-1])
-            a_flat_train = tf.reshape(a_train, [-1])
-            At_flat_test = tf.reshape(At_test_out[f:t], [-1])
-            a_flat_test = tf.reshape(a_test, [-1])
-            loss_train = k.losses.mean_squared_error(At_flat_train, a_flat_train)
-            loss_test = k.losses.mean_squared_error(At_flat_test, a_flat_test)
-            # loss_hist.append((loss_train, loss_test))
-            # batch_loss.append((loss_train, loss_test))
-            grads = tape.gradient(loss_train, model.trainable_weights)
-            # batch_grad.append(grads)
-            optimizer.apply_gradients(zip(grads, model.trainable_weights))
-        # mean_grads = sum_gradients(batch_grad, "mean")
-        # loss_hist.append(np.mean(batch_loss, 0))
-        loss_hist.append((loss_train, loss_test))
-        # optimizer.apply_gradients(zip(mean_grads, model.trainable_weights))
-        bar.update(1)
+        if temp_loss:
+            temp_smooth = TemporalSmoothness(temp_loss)
+        loss_hist = []
+        optimizer = k.optimizers.Adam(0.0005)
+        bar = tqdm.tqdm(total=epochs, leave=True, position=0)
+        for i in range(epochs):
+            """batch_grad = []
+            batch_loss = []
+            for b in range(batch_size):"""
+            with tf.GradientTape() as tape:
+                f = 10  # from_time[i, b]
+                t = 60  # to_time[i, b]
+                if rnn_type == "gat" or rnn_type == "transformer":
+                    x_train, a_train, attn_coeff_train = model(
+                        [Xt_train[f:t], At_train_in[f:t]]
+                    )
+                else:
+                    x_train, a_train = model([Xt_train[f:t], At_train_in[f:t]])
+                if rnn_type == "gat" or rnn_type == "transformer":
+                    x_test, a_test, attn_coeff_test = model(
+                        [Xt_train[f:t], At_test_in[f:t]]
+                    )
+                else:
+                    x_test, a_test = model([Xt_train[f:t], At_test_in[f:t]])
+                a_train = a_train * train_mask[1:][f:t]
+                a_test = a_test * test_mask[1:][f:t]
+                At_flat_train = tf.reshape(At_train_out[f:t], [-1])
+                a_flat_train = tf.reshape(a_train, [-1])
+                At_flat_test = tf.reshape(At_test_out[f:t], [-1])
+                a_flat_test = tf.reshape(a_test, [-1])
+                if binary:
+                    loss_train = k.losses.binary_crossentropy(At_flat_train, a_flat_train)
+                    loss_test = k.losses.binary_crossentropy(At_flat_test, a_flat_test)
+                else:
+                    loss_train = k.losses.mean_squared_error(At_flat_train, a_flat_train)
+                    loss_test = k.losses.mean_squared_error(At_flat_test, a_flat_test)
+                if temp_loss and not binary:
+                    loss_train += temp_smooth([Xt_train, At_train_in])
+                # loss_hist.append((loss_train, loss_test))
+                # batch_loss.append((loss_train, loss_test))
+                grads = tape.gradient(loss_train, model.trainable_weights)
+                # batch_grad.append(grads)
+                optimizer.apply_gradients(zip(grads, model.trainable_weights))
+            # mean_grads = sum_gradients(batch_grad, "mean")
+            # loss_hist.append(np.mean(batch_loss, 0))
+            loss_hist.append((loss_train, loss_test))
+            # optimizer.apply_gradients(zip(mean_grads, model.trainable_weights))
+            bar.update(1)
+        return model, attn_coeff_train, attn_coeff_test, a_train, a_test, loss_hist
 
-    model.save_weights("./RNN-GATBIL/Model")
-    losses = plt.plot(loss_hist)
-    plt.legend(iter(losses), ("Train", "Test"))
+    loss_histories = []
+    test_losses = (False, "euclidian", "rotation", "angle")
+    for loss_type in test_losses:
+        model, attn_coeff_train, attn_coeff_test, a_train, a_test, loss_hist = train(temp_loss=loss_type,
+                                                                                     rnn_type=rnn_type,
+                                                                                     binary=binary)
+        loss_histories.append(loss_hist)
 
+    # model.save_weights("./RNN-GATBIL/Model")
+    losses_plots = []
+    colors = plt.get_cmap("Set1")
+    for i, loss in enumerate(loss_histories):
+        losses_plot = plt.plot(loss, color=colors(i))
+        losses_plots.append(losses_plot)
+
+    # iter(map(lambda x: (f"Train {x}", f"Test {x}"), test_losses))
+    legend_names = [(f"Train {loss_name}", f"Test {loss_name}") for loss_name in test_losses]
+    legend_names = [name for names in legend_names for name in names]
+    plots = [plot for plots in losses_plots for plot in plots]
+    plt.legend(plots, legend_names)
+    plt.show()
+    quit()
     if rnn_type == "gat":
         row, col = 2, 2
         fig2, axs = plt.subplots(row, col)
+        mean_attn = np.mean(attn_coeff_train.numpy(), axis=2)
+        mean_attn = np.squeeze(mean_attn)
+        mean_attn_idx = np.random.choice(np.arange(170), size=4)
+        mean_attn = mean_attn[mean_attn_idx]
+        counter = 0
+        for i in range(row):
+            for j in range(col):
+                axs[i, j].imshow(mean_attn[counter])
+                counter += 1
+
+    if rnn_type == "transformer":
+        row, col = 2, 2
+        fig2, axs = plt.subplots(row, col)
         mean_attn = np.mean(attn_coeff_train.numpy(), axis=1)
+        mean_attn = np.squeeze(mean_attn)
         counter = 0
         for i in range(row):
             for j in range(col):
@@ -341,14 +405,20 @@ if __name__ == "__main__":
 
     fig1, ax1 = plt.subplots(1, 1)
 
+    if binary:
+        threshold = -0.01
+    else:
+        threshold = 0.5
 
     def update2(i):
         ax1.clear()
         fig1.suptitle(f"Year {10 + i}")
         a_pred = a_train[i].numpy().flatten()
-        a_pred = a_pred[a_pred > 0.5]
+        a_pred = a_pred[a_pred > threshold]
+        if binary:
+            a_pred = np.asarray(a_pred>0.5, dtype=np.float32)
         a_true = At_train_out[i].numpy().flatten()
-        a_true = a_true[a_true > 0.5]
+        a_true = a_true[a_true > threshold]
         ax1.hist(a_true, bins=60, alpha=0.5, color="blue", density=True, label="True")
         ax1.hist(a_pred, bins=60, alpha=0.5, color="red", density=True, label="Pred")
         ax1.legend()

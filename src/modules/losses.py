@@ -2,15 +2,16 @@ import numpy as np
 import tensorflow as tf
 import tensorflow.keras.layers as l
 
+
 # from math import pi
 
 
 @tf.function
 def square_loss(
-    y_true, y_pred, test_mask=None, no_diag=False, random_mask=False, zero_mask=False
+        y_true, y_pred, test_mask=None, no_diag=False, random_mask=False, zero_mask=False
 ):
     if isinstance(y_true, tf.sparse.SparseTensor) and isinstance(
-        y_pred, tf.sparse.SparseTensor
+            y_pred, tf.sparse.SparseTensor
     ):
         diff = tf.square(y_true.values - y_pred.values)
         return tf.reduce_mean(diff)
@@ -60,11 +61,11 @@ def nll(y_true, mu, sigma):
         mu, tf.sparse.SparseTensor
     )
     nll = (
-        -tf.reduce_mean(
-            tf.math.square(y_true.values - mu.values) / tf.math.square(sigma.values)
-            + tf.math.log(tf.math.square(sigma.values))
-        )
-        * 0.5
+            -tf.reduce_mean(
+                tf.math.square(y_true.values - mu.values) / tf.math.square(sigma.values)
+                + tf.math.log(tf.math.square(sigma.values))
+            )
+            * 0.5
     )
     # print(f"loss shape: {nll.shape}")
     return nll
@@ -84,9 +85,9 @@ def binary_cross_entropy(y_true, p):
 # @tf.function
 def mixed_discrete_continuous_nll_sparse(y_true, mu, p):
     assert (
-        isinstance(y_true, tf.sparse.SparseTensor)
-        and isinstance(mu, tf.sparse.SparseTensor)
-        and isinstance(p, tf.sparse.SparseTensor)
+            isinstance(y_true, tf.sparse.SparseTensor)
+            and isinstance(mu, tf.sparse.SparseTensor)
+            and isinstance(p, tf.sparse.SparseTensor)
     )
 
     non_zero_edges = tf.where(y_true.values != 0)
@@ -210,3 +211,60 @@ def mse_uncertainty(y_true, mu, sigma):
     return tf.reduce_mean(
         tf.square(y_true - mu) * tf.exp(-sigma) * 0.5 + 0.5 * sigma, (0, 1)
     )
+
+
+class TemporalSmoothness(l.Layer):
+    """
+    Parameters:
+        - l: lambda regularizer coefficient that weights previous with foward embedding
+        - distance: distance metric to use, can be: "euclidian", "rotation", "angle"
+    """
+
+    def __init__(self, l=0.1, distance="euclidian"):
+        super(TemporalSmoothness, self).__init__()
+        allowed_distances = {"euclidian", "rotation", "angle"}
+        self.l = l
+        self.distance = distance
+        if self.distance not in allowed_distances:
+            raise ValueError(f"{self.distance} not in {allowed_distances}")
+
+    def build(self, input_shape):
+        """
+        Inputs:
+            x: Temporal embeddings of shape TxNxd where T is the time dimension, N is the number of nodes and d is the
+               latent embedding dimension
+            a: Temporal adjacency matrix of shape TxNxN
+        Parameters:
+            R: if distance=="rotation" then R is the Rotation Matrix Learnable Parameter of shape Txdxd
+        """
+        x, a = input_shape
+        if self.distance == "rotation":
+            self.R = self.add_weight(name="Rotation_weight", shape=(x[0] - 1, x[-1], x[-1]))
+            self.identity = tf.constant(tf.eye(x[-1], x[-1]))
+        self.l = self.add_weight(name="Regularizer_weight", shape=(1,))
+
+    def call(self, inputs, *args, **kwargs):
+        """
+        Inputs:
+            x: Temporal embeddings of shape TxNxd where T is the time dimension, N is the number of nodes and d is the
+               latent embedding dimension
+            a: Temporal adjacency matrix of shape TxNxN
+        """
+        x, a = inputs
+        xt = x[:-1]  # Xt
+        xt_1 = x[1:]  # Xt+1
+        if self.distance == "rotation":
+            xt_1 = tf.einsum("tnd,tdx->tnx", xt_1, self.R)
+
+        temporal_diff = xt_1 - xt
+        distance = tf.einsum("tnd,tnd->tn", temporal_diff, temporal_diff)  # Euclidian distance ||xt+1 - xt||
+        if self.distance == "euclidian":
+            return self.l * tf.reduce_sum(distance, (0, 1))  # sum over T and N
+        elif self.distance == "rotation":
+            rotation_inner = tf.matmul(self.R, self.R)  # TxRxR
+            sq_diff = tf.math.square(rotation_inner - self.identity)  # TxRxR
+            rotation_constraint = tf.reduce_sum(sq_diff, (0, 1, 2))
+            return self.l * tf.reduce_sum(distance, (0, 1)) + rotation_constraint  # sum over T and N
+        elif self.distance == "angle":
+            angle = 1.0 - tf.einsum("tnd,tnd->tn", xt_1, xt)
+            return self.l * tf.reduce_sum(angle, (0, 1))

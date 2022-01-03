@@ -289,7 +289,8 @@ class SelfAttention(l.Layer):
             dropout_rate=0.5,
             lags=10,
             concat_heads=False,
-            return_attn=False
+            return_attn=False,
+            renormalize=False
     ):
         super(SelfAttention, self).__init__()
         self.channels = channels
@@ -298,6 +299,7 @@ class SelfAttention(l.Layer):
         self.lags = lags
         self.concat_heads = concat_heads
         self.return_attn = return_attn
+        self.renormalize = renormalize
 
     def build(self, input_shape):
         """
@@ -338,6 +340,8 @@ class SelfAttention(l.Layer):
         soft_qk = tf.nn.softmax(qk, axis=-1)
         if self.dropout_rate:
             soft_qk = self.drop(soft_qk)
+            if self.renormalize:
+                soft_qk = tf.nn.softmax(soft_qk, axis=-1)
         x_prime = tf.einsum("nhtz,nzho->nhto", soft_qk, value)
         if self.concat_heads:
             x_prime = tf.transpose(x_prime, (0, 2, 1, 3))  # NxTxHxO
@@ -1215,7 +1219,6 @@ class BilinearRelationalScoringSparse(l.Layer):
         return score
 
 
-# TODO
 class LinearScoringDense(l.Layer):
     def __init__(self, activation=None, regularizer=None):
         super(LinearScoringDense, self).__init__()
