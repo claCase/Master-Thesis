@@ -333,7 +333,7 @@ if __name__ == "__main__":
             temp_smooth = TemporalSmoothness(temp_loss)
         loss_hist = []
         optimizer = k.optimizers.Adam(0.0005)
-        # bar = tqdm.tqdm(total=epochs, leave=True, position=0)
+        bar = tqdm.tqdm(total=epochs, leave=True, position=0)
         for i in range(epochs):
             """batch_grad = []
             batch_loss = []
@@ -372,10 +372,11 @@ if __name__ == "__main__":
                 '''
                 # loss_train = tf.where(tf.math.is_nan(loss_train) | tf.math.is_inf(loss_train), 0, loss_train)
                 logits = tf.transpose([p_train, mu_train, sigma_train], perm=(1, 2, 3, 0))
-                loss_train = zero_inflated_lognormal_loss2(At_train_in[f:t], logits)
-                print(loss_train)
+                loss_train = zero_inflated_lognormal_loss2(tf.expand_dims(At_train_in[f:t], -1), logits)
+                #print(loss_train)
                 '''loss_train = mixed_discrete_continous_nll_dense(mu_train * train_mask[1:][f:t], sigma_train * train_mask[1:][f:t],
                                                           P_train * train_mask[1:][f:t], At_train_out[f:t])'''
+                loss_train = tf.squeeze(loss_train)
                 loss_train = tf.reduce_sum(loss_train, (0, 1, 2))
                 '''loss_test = mixed_discrete_continous_nll_dense(mu_test * test_mask[1:][f:t], sigma_test * test_mask[1:][f:t],
                                                          P_test * test_mask[1:][f:t], At_test_out[f:t])
@@ -383,22 +384,21 @@ if __name__ == "__main__":
                                                          P_test * test_mask[1:][f:t], At_test_out[f:t])'''
                 loss_test = loss_train
                 # loss_test = tf.reduce_sum(loss_test, (0, 1, 2))
-                '''if temp_loss and not binary:
+                if temp_loss and not binary:
                     loss_train += temp_smooth([Xt_train, At_train_in])
-                '''
                 grads = tape.gradient(loss_train, model.trainable_weights)
                 optimizer.apply_gradients(zip(grads, model.trainable_weights))
             loss_hist.append((loss_train, loss_test))
-            # bar.update(1)
-        return model, attn_coeff_train, attn_coeff_test, a_train, a_test, loss_hist
+            bar.update(1)
+        return model, attn_coeff_train, attn_coeff_test, p_train, mu_train, sigma_train, loss_hist
 
 
     loss_histories = []
     test_losses = (False, "euclidian", "rotation", "angle")
     for loss_type in test_losses:
-        model, attn_coeff_train, attn_coeff_test, a_train, a_test, loss_hist = train(temp_loss=loss_type,
-                                                                                     rnn_type=rnn_type,
-                                                                                     binary=binary)
+        model, attn_coeff_train, attn_coeff_test, p_train, mu_train, sigma_train, loss_hist = train(temp_loss=loss_type,
+                                                                                                    rnn_type=rnn_type,
+                                                                                                    binary=binary)
         loss_histories.append(loss_hist)
 
     # model.save_weights("./RNN-GATBIL/Model")
