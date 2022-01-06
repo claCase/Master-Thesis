@@ -30,7 +30,7 @@ def generate_list_lower_triang(batch, t, lag):
     return np.asarray([lower_adj] * batch)
 
 
-n_nodes = 10
+n_nodes = 100
 f_dim = 2
 t = 20
 pos = _get_positional_encoding_matrix(t, f_dim)
@@ -41,12 +41,12 @@ trajectories = np.zeros(shape=(t, n_nodes, f_dim * 2))
 lags = 15
 nodes_lower_adj = generate_list_lower_triang(n_nodes, t, lags)
 
-for i in range(1, t - 1):
+for i in range(1, t-1):
     update = np.random.normal(loc=drift, scale=0.5)
     X_prime = trajectories[i - 1, :, :2] + update
     trajectories[i, :, :2] = X_prime
 
-nodes_trajectories = np.swapaxes(trajectories, 0, 1)
+nodes_trajectories = np.swapaxes(trajectories, 0, 1)  # NxTxd
 
 fig, axes = plt.subplots(3, 1)
 fig_l, axes_l = plt.subplots()
@@ -58,23 +58,30 @@ axes[0].set_title("True Trajectories")
 for n in range(n_nodes):
     nodes_trajectories[n, :, 2:] = pos
 
-'''gat = GATConv(
-    channels=10,
-    attn_heads=2,
-    dropout_rate=0.5,
-    concat_heads=False,
-    add_self_loops=False,
-    return_attn_coef=True
-)
-'''
-gat = SelfAttention(
-    channels=10,
-    attn_heads=2,   
-    dropout_rate=0.5,
-    concat_heads=False,
-    return_attn=True
-)
-o = k.layers.Dense(2, None)
+spektral_gat = True
+activations = 5
+heads = 5
+drop_rate = 0.1
+concat = True
+if spektral_gat:
+    gat = GATConv(
+        channels=activations,
+        attn_heads=heads,
+        dropout_rate=drop_rate,
+        concat_heads=concat,
+        add_self_loops=False,
+        return_attn_coef=True
+    )
+else:
+    gat = SelfAttention(
+        channels=activations,
+        attn_heads=heads,
+        dropout_rate=drop_rate,
+        concat_heads=concat,
+        return_attn=True
+    )
+
+o = k.layers.Dense(2, "linear")
 optimizer = k.optimizers.RMSprop(0.001)
 l = k.losses.MeanSquaredError()
 loss_hist = []
@@ -100,10 +107,14 @@ for i in range(n_nodes):
     axes[1].plot(X[i, :, 0], X[i, :, 1])
 
 plt.figure()
-plt.imshow(attn[0,0])
+if spektral_gat:
+    plt.imshow(attn[0, :, 0, :])
+else:
+    plt.imshow(attn[0, 0, :, :])
+
 i = k.Input(shape=(None, f_dim * 2), batch_size=n_nodes)
-lstm = LSTM(10, return_sequences=True, dropout=0.5)(i)
-o = TimeDistributed(k.layers.Dense(2))(lstm)
+lstm = LSTM(activations, return_sequences=True, dropout=drop_rate)(i)
+o = TimeDistributed(k.layers.Dense(2, "linear"))(lstm)
 lstm_model = k.models.Model(i, o)
 
 optimizer = k.optimizers.RMSprop(0.001)

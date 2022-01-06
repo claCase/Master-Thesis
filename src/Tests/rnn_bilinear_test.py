@@ -357,13 +357,11 @@ if __name__ == "__main__":
         losses_plot = plt.plot(loss, color=colors(i))
         losses_plots.append(losses_plot)
 
-    # iter(map(lambda x: (f"Train {x}", f"Test {x}"), test_losses))
     legend_names = [(f"Train {loss_name}", f"Test {loss_name}") for loss_name in test_losses]
     legend_names = [name for names in legend_names for name in names]
     plots = [plot for plots in losses_plots for plot in plots]
     plt.legend(plots, legend_names)
-    plt.show()
-    quit()
+
     if rnn_type == "gat":
         row, col = 2, 2
         fig2, axs = plt.subplots(row, col)
