@@ -1,7 +1,9 @@
 import numpy as np
 import tensorflow as tf
 import tensorflow.keras.layers as l
-
+from tensorflow.keras.losses import binary_crossentropy
+from tensorflow_probability import distributions as tfd
+import tensorflow.keras.backend as K
 
 # from math import pi
 
@@ -83,7 +85,11 @@ def binary_cross_entropy(y_true, p):
 
 
 # @tf.function
+# TODO
 def mixed_discrete_continuous_nll_sparse(y_true, mu, p):
+    """
+    https://github.com/tensorflow/probability/issues/1224
+    """
     assert (
             isinstance(y_true, tf.sparse.SparseTensor)
             and isinstance(mu, tf.sparse.SparseTensor)
@@ -113,6 +119,71 @@ def mixed_discrete_continuous_nll_sparse(y_true, mu, p):
     return loss_nll + loss_ce
 
 
+def mixed_discrete_continous_nll_dense(mu, sigma, p, true):
+    labels = tf.where(true == 0.0, 0.0, 1.0)
+    bernulli_loss = -tfd.Bernoulli(p).log_prob(labels)
+    log_normal_nll = -tfd.LogNormal(mu, sigma).log_prob(true)
+    combined_loss = tf.where(labels == 0.0, bernulli_loss, bernulli_loss + log_normal_nll)
+    return combined_loss
+
+
+def zero_inflated_lognormal_loss(mu, sigma, p, true):
+    zeroness_loss = -tfd.Bernoulli(probs=p).log_prob(tf.equal(true, 0))
+    safe_labels = tf.where(tf.equal(true, 0.0), 1., true)
+    nonzero_loss = tf.where(tf.equal(true, 0.0), 0.0, -tfd.LogNormal(mu, sigma).log_prob(safe_labels))
+    return zeroness_loss + nonzero_loss
+
+
+def zero_inflated_normal(mu, sigma, p, true):
+    p_mix = tf.transpose([p, 1 - p], perm=(1, 2, 3, 0))
+    a = tfd.Mixture(
+        cat=tfd.Categorical(probs=p_mix),
+        components=[
+            tfd.Deterministic(loc=tf.zeros_like(p)),
+            tfd.LogNormal(loc=mu, scale=sigma),
+        ])
+    return a.log_prob(true)
+
+
+def zero_inflated_lognormal_loss2(labels: tf.Tensor,
+                                 logits: tf.Tensor) -> tf.Tensor:
+    """Computes the zero inflated lognormal loss.
+    Usage with tf.keras API:
+    ```python
+    model = tf.keras.Model(inputs, outputs)
+    model.compile('sgd', loss=zero_inflated_lognormal)
+    ```
+    Arguments:
+    labels: True targets, tensor of shape [batch_size, 1].
+    logits: Logits of output layer, tensor of shape [batch_size, 3].
+    Returns:
+    Zero inflated lognormal loss value.
+    """
+    labels = tf.convert_to_tensor(labels, dtype=tf.float32)
+    positive = tf.cast(labels > 0, tf.float32)
+
+    logits = tf.convert_to_tensor(logits, dtype=tf.float32)
+    logits.shape.assert_is_compatible_with(
+      tf.TensorShape(labels.shape[:-1].as_list() + [3]))
+
+    positive_logits = logits[..., :1]
+    classification_loss = tf.keras.losses.binary_crossentropy(
+      y_true=positive, y_pred=positive_logits, from_logits=True)
+
+    loc = logits[..., 1:2]
+    scale = tf.math.maximum(
+        K.softplus(logits[..., 2:]),
+        tf.math.sqrt(K.epsilon()))
+    safe_labels = positive * labels + (
+        1 - positive) * K.ones_like(labels)
+    regression_loss = -K.mean(
+        positive * (
+          tfd.LogNormal(loc=loc, scale=scale).log_prob(safe_labels)
+        ),
+        axis=-1)
+    return 0.5 * classification_loss + 0.5 * regression_loss
+
+
 @tf.function
 def embedding_smoothness(X, A, square=True):
     if isinstance(A, tf.Tensor):
@@ -128,14 +199,6 @@ def embedding_smoothness(X, A, square=True):
         d = x1 - x2
         loss = tf.reduce_sum(d, 1)
         return tf.abs(tf.reduce_sum(loss, 0))
-
-
-@tf.function
-def temporal_embedding_smoothness(Xt0, Xt1, l=1):
-    inner = tf.einsum("ij,ij->i", Xt0, Xt1)
-    smoothness = 1 - inner
-    tot_smoothness = tf.reduce_sum(smoothness)
-    return tot_smoothness * l
 
 
 class SparsityRegularizerLayer(l.Layer):
@@ -216,7 +279,7 @@ def mse_uncertainty(y_true, mu, sigma):
 class TemporalSmoothness(l.Layer):
     """
     Parameters:
-        - l: lambda regularizer coefficient that weights previous with foward embedding
+        - l: lambda regularizer coefficient that weights previous with forward embedding
         - distance: distance metric to use, can be: "euclidian", "rotation", "angle"
     """
 
@@ -230,6 +293,8 @@ class TemporalSmoothness(l.Layer):
 
     def build(self, input_shape):
         """
+        Representation Learning for Dynamic Graphs - A Survey
+
         Inputs:
             x: Temporal embeddings of shape TxNxd where T is the time dimension, N is the number of nodes and d is the
                latent embedding dimension
@@ -255,16 +320,21 @@ class TemporalSmoothness(l.Layer):
         xt_1 = x[1:]  # Xt+1
         if self.distance == "rotation":
             xt_1 = tf.einsum("tnd,tdx->tnx", xt_1, self.R)
-
         temporal_diff = xt_1 - xt
         distance = tf.einsum("tnd,tnd->tn", temporal_diff, temporal_diff)  # Euclidian distance ||xt+1 - xt||
         if self.distance == "euclidian":
             return self.l * tf.reduce_sum(distance, (0, 1))  # sum over T and N
         elif self.distance == "rotation":
-            rotation_inner = tf.matmul(self.R, self.R)  # TxRxR
+            """
+            Node Embedding over Temporal Graphs
+            """
+            rotation_inner = tf.matmul(self.R, tf.transpose(self.R, perm=(0, 2, 1)))  # TxRxR
             sq_diff = tf.math.square(rotation_inner - self.identity)  # TxRxR
             rotation_constraint = tf.reduce_sum(sq_diff, (0, 1, 2))
             return self.l * tf.reduce_sum(distance, (0, 1)) + rotation_constraint  # sum over T and N
         elif self.distance == "angle":
+            """
+            Scalable Temporal Latent Space Inference for Link Prediction in Dynamic Social Networks
+            """
             angle = 1.0 - tf.einsum("tnd,tnd->tn", xt_1, xt)
             return self.l * tf.reduce_sum(angle, (0, 1))
