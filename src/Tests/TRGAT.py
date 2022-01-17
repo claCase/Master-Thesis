@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import tqdm
 import pickle as pkl
 import argparse
+import os
 
 
 def generate_data_block_matrix(data, sparse=True):
@@ -106,8 +107,8 @@ if synthetic:
     A = block_time + diag
 else:
     with open(
-        "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
-        "rb",
+            os.path.join(os.getcwd(), "Data", "complete_data_final_transformed_no_duplicate.pkl"),
+            "rb",
     ) as file:
         data_np = pkl.load(file)
     data_sp = tf.sparse.SparseTensor(
