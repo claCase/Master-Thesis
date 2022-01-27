@@ -151,8 +151,8 @@ if __name__ == "__main__":
         )
     else:
         with open(
-            "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
-            "rb",
+                os.path.join(os.getcwd(), "Data", "complete_data_final_transformed_no_duplicate.pkl"),
+                "rb",
         ) as file:
             data_np = pkl.load(file)
         data_sp = tf.sparse.SparseTensor(
