@@ -57,9 +57,9 @@ if __name__ == "__main__":
     A_log = data_dense
 
     if lognormal:
-        model = models.Bilinear(25, qr=True, use_mask=True, use_variance=True, activation=None)
+        model = models.Bilinear(15, qr=True, use_mask=True, use_variance=True, activation=None)
     else:
-        model = models.Bilinear(25, qr=True, use_mask=use_mask, activation="relu")
+        model = models.Bilinear(5, qr=True, use_mask=use_mask, activation="relu")
     if lognormal:
         x0, x_m0, x0_var, a0, a_m0, a0_var = model(A_log)
     else:
@@ -105,7 +105,7 @@ if __name__ == "__main__":
     loss_hist = np.asarray(loss_hist)
     plt.plot(loss_hist)
     plt.title("Loss History")
-    x0_tnse = TSNE(n_components=2, perplexity=80).fit_transform(x0)
+    x0_tnse = TSNE(n_components=2, perplexity=80).fit_transform(x0.numpy())
     plot_names(x0_tnse)
     plt.figure()
     plt.imshow(A_log.numpy())
@@ -129,6 +129,14 @@ if __name__ == "__main__":
     plt.colorbar()
     plt.title("Difference Weighted - True Adj")
 
+    scale = tf.math.maximum(
+        k.backend.softplus(logits[..., 2:]),
+        tf.math.sqrt(k.backend.epsilon()))
+    plt.figure()
+    plt.imshow(scale.numpy().squeeze())
+    plt.colorbar()
+    plt.title("Variance")
+
     x_tnse = TSNE(n_components=2, perplexity=80).fit_transform(x.numpy())
     clustering = SpectralClustering(n_clusters=10, affinity="nearest_neighbors").fit(
         x_tnse
@@ -138,7 +146,20 @@ if __name__ == "__main__":
     colors = colormap(labels)
     fig, ax = plt.subplots()
     ax.scatter(x_tnse[:, 0], x_tnse[:, 1], color=colors)
+    ax.set_title("Mean Embedding")
     plot_names(x_tnse, ax)
+
+    x_tnse_var = TSNE(n_components=2, perplexity=80).fit_transform(x_var.numpy())
+    clustering = SpectralClustering(n_clusters=10, affinity="nearest_neighbors").fit(
+        x_tnse_var
+    )
+    labels = clustering.labels_
+    colormap = cm.get_cmap("Set1")
+    colors = colormap(labels)
+    fig1, ax1 = plt.subplots()
+    ax1.scatter(x_tnse_var[:, 0], x_tnse_var[:, 1], color=colors)
+    ax1.set_title("Variance Embedding")
+    plot_names(x_tnse_var, ax1)
 
     if lognormal:
         a_pred = a.numpy().flatten()
@@ -162,4 +183,17 @@ if __name__ == "__main__":
     plt.figure()
     stats.probplot(diff.flatten(), dist="norm", plot=plt)
     plt.title("QQ-plot True-Pred")
+
+    R = model.layers[0].trainable_weights[0]
+    X = model.layers[0].trainable_weights[1]
+    plt.figure()
+    plt.imshow(R.numpy())
+    plt.colorbar()
+    plt.title("R Coefficient")
+
+    plt.figure()
+    img = plt.imshow(X.numpy().T)
+    plt.colorbar(img, fraction=0.0046, pad=0.04)
+    plt.title("X embeddings")
+    plt.tight_layout()
     plt.show()

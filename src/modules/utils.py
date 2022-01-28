@@ -1,6 +1,8 @@
 import tensorflow as tf
 import numpy as np
-
+import tensorflow_probability as tfp
+from tensorflow_probability import distributions as tfd
+import tensorflow.keras.backend as K
 
 @tf.function
 def symmetrize(A, out_degree=False):
@@ -211,3 +213,49 @@ def get_positional_encoding_matrix(max_len, d_emb):
     pos_enc[1:, 0::2] = np.sin(pos_enc[1:, 0::2])  # dim 2i
     pos_enc[1:, 1::2] = np.cos(pos_enc[1:, 1::2])  # dim 2i+1
     return pos_enc
+
+
+def LogGamma(alpha, beta, l=0):
+    return tfp.bijectors.Shift(l - 1)(tfp.bijectors.Log()(tfp.distributions.Gamma(alpha, beta)))
+
+
+def zero_inflated_logGamma(logits=None, p=None, mu=None, sigma=None):
+    """
+    logits: TxNxNx3
+    """
+    if logits is not None:
+        p, mu, sigma = tf.unstack(logits, axis=-1)
+        p = tf.nn.sigmoid(p)
+        sigma = tf.math.maximum(
+            K.softplus(sigma),
+            tf.math.sqrt(K.epsilon()))
+    perm_axis = tf.concat((tf.range(len(p.shape)) + 1, (0,)), axis=0)
+    p_mix = tf.transpose([1 - p, p], perm=perm_axis)
+    a = tfd.Mixture(
+        cat=tfd.Categorical(probs=p_mix),
+        components=[
+            tfd.Deterministic(loc=tf.zeros_like(p)),
+            LogGamma(mu, sigma),
+        ])
+    return a
+
+
+def zero_inflated_lognormal(logits=None, p=None, mu=None, sigma=None):
+    """
+    logits: TxNxNx3
+    """
+    if logits is not None:
+        p, mu, sigma = tf.unstack(logits, axis=-1)
+        p = tf.nn.sigmoid(p)
+        sigma = tf.math.maximum(
+            K.softplus(sigma),
+            tf.math.sqrt(K.epsilon()))
+    perm_axis = tf.concat((tf.range(len(p.shape))+1, (0,)), axis=0)
+    p_mix = tf.transpose([1 - p, p], perm=perm_axis)
+    a = tfd.Mixture(
+        cat=tfd.Categorical(probs=p_mix),
+        components=[
+            tfd.Deterministic(loc=tf.zeros_like(p)),
+            tfd.LogNormal(loc=mu, scale=sigma),
+        ])
+    return a

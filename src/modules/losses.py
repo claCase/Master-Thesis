@@ -2,8 +2,10 @@ import numpy as np
 import tensorflow as tf
 import tensorflow.keras.layers as l
 from tensorflow.keras.losses import binary_crossentropy
+import tensorflow_probability as tfp
 from tensorflow_probability import distributions as tfd
 import tensorflow.keras.backend as K
+from src.modules.utils import LogGamma
 
 # from math import pi
 
@@ -84,69 +86,9 @@ def binary_cross_entropy(y_true, p):
     return loss
 
 
-# @tf.function
-# TODO
-def mixed_discrete_continuous_nll_sparse(y_true, mu, p):
-    """
-    https://github.com/tensorflow/probability/issues/1224
-    """
-    assert (
-            isinstance(y_true, tf.sparse.SparseTensor)
-            and isinstance(mu, tf.sparse.SparseTensor)
-            and isinstance(p, tf.sparse.SparseTensor)
-    )
-
-    non_zero_edges = tf.where(y_true.values != 0)
-    y_true_non_zero_sparse = tf.sparse.SparseTensor(
-        tf.squeeze(tf.gather(y_true.indices, non_zero_edges)),
-        tf.squeeze(tf.gather(y_true.values, non_zero_edges)),
-        y_true.shape,
-    )
-    mu_non_zero_sparse = tf.sparse.SparseTensor(
-        tf.squeeze(tf.gather(y_true.indices, non_zero_edges)),
-        tf.squeeze(tf.gather(mu.values, non_zero_edges)),
-        y_true.shape,
-    )
-    """sigma_non_zero_sparse = tf.sparse.SparseTensor(tf.squeeze(tf.gather(y_true.indices, non_zero_edges)),
-                                                tf.squeeze(tf.gather(sigma.values, non_zero_edges)),
-                                                y_true.shape)"""
-    y_true_binary_values = tf.where(y_true.values == 0, 0.0, 1.0)
-    y_true_binary_sparse = tf.sparse.SparseTensor(
-        y_true.indices, y_true_binary_values, y_true.shape
-    )
-    loss_nll = square_loss(y_true_non_zero_sparse, mu_non_zero_sparse)
-    loss_ce = binary_cross_entropy(y_true_binary_sparse, p)
-    return loss_nll + loss_ce
-
-
-def mixed_discrete_continous_nll_dense(mu, sigma, p, true):
-    labels = tf.where(true == 0.0, 0.0, 1.0)
-    bernulli_loss = -tfd.Bernoulli(p).log_prob(labels)
-    log_normal_nll = -tfd.LogNormal(mu, sigma).log_prob(true)
-    combined_loss = tf.where(labels == 0.0, bernulli_loss, bernulli_loss + log_normal_nll)
-    return combined_loss
-
-
-def zero_inflated_lognormal_loss(mu, sigma, p, true):
-    zeroness_loss = -tfd.Bernoulli(probs=p).log_prob(tf.equal(true, 0))
-    safe_labels = tf.where(tf.equal(true, 0.0), 1., true)
-    nonzero_loss = tf.where(tf.equal(true, 0.0), 0.0, -tfd.LogNormal(mu, sigma).log_prob(safe_labels))
-    return zeroness_loss + nonzero_loss
-
-
-def zero_inflated_normal(mu, sigma, p, true):
-    p_mix = tf.transpose([p, 1 - p], perm=(1, 2, 3, 0))
-    a = tfd.Mixture(
-        cat=tfd.Categorical(probs=p_mix),
-        components=[
-            tfd.Deterministic(loc=tf.zeros_like(p)),
-            tfd.LogNormal(loc=mu, scale=sigma),
-        ])
-    return a.log_prob(true)
-
-
-def zero_inflated_lognormal_loss2(labels: tf.Tensor,
-                                 logits: tf.Tensor) -> tf.Tensor:
+def zero_inflated_lognormal_loss(labels: tf.Tensor,
+                                 logits: tf.Tensor,
+                                 reduce_axis=(-4, -3, -2, -1)) -> tf.Tensor:
     """Computes the zero inflated lognormal loss.
     Usage with tf.keras API:
     ```python
@@ -159,33 +101,79 @@ def zero_inflated_lognormal_loss2(labels: tf.Tensor,
     Returns:
     Zero inflated lognormal loss value.
     """
+    # logits = tf.expand_dims(logits, 0)
+    # labels = tf.expand_dims(labels, 0)
     labels = tf.convert_to_tensor(labels, dtype=tf.float32)
     positive = tf.cast(labels > 0, tf.float32)
 
     logits = tf.convert_to_tensor(logits, dtype=tf.float32)
     logits.shape.assert_is_compatible_with(
-      tf.TensorShape(labels.shape[:-1].as_list() + [3]))
+        tf.TensorShape(labels.shape[:-1].as_list() + [3]))
 
     positive_logits = logits[..., :1]
     classification_loss = tf.keras.losses.binary_crossentropy(
-      y_true=positive, y_pred=positive_logits, from_logits=True)
+        y_true=positive, y_pred=positive_logits, from_logits=True, axis=reduce_axis)
 
     loc = logits[..., 1:2]
+    # loc = tf.math.maximum(tf.nn.relu(loc), tf.math.sqrt(K.epsilon()))
     scale = tf.math.maximum(
         K.softplus(logits[..., 2:]),
         tf.math.sqrt(K.epsilon()))
     safe_labels = positive * labels + (
-        1 - positive) * K.ones_like(labels)
+            1 - positive) * K.ones_like(labels)
     regression_loss = -K.mean(
-        positive * (
-          tfd.LogNormal(loc=loc, scale=scale).log_prob(safe_labels)
-        ),
-        axis=-1)
+        positive * (tfd.LogNormal(loc=loc, scale=scale)).log_prob(safe_labels),
+        axis=reduce_axis)
+    return 0.5 * classification_loss + 0.5 * regression_loss
+
+
+def zero_inflated_logGamma_loss(labels: tf.Tensor,
+                                logits: tf.Tensor,
+                                reduce_axis=(-4, -3, -2, -1)) -> tf.Tensor:
+    """Computes the zero inflated logGamma loss.
+    Usage with tf.keras API:
+    ```python
+    model = tf.keras.Model(inputs, outputs)
+    model.compile('sgd', loss=zero_inflated_logGamma)
+    ```
+    Arguments:
+    labels: True targets, tensor of shape [batch_size, 1].
+    logits: Logits of output layer, tensor of shape [batch_size, 3].
+    Returns:
+    Zero inflated lognormal loss value.
+    """
+    # logits = tf.expand_dims(logits, 0)
+    # labels = tf.expand_dims(labels, 0)
+    labels = tf.convert_to_tensor(labels, dtype=tf.float32)
+    positive = tf.cast(labels > 0, tf.float32)
+
+    logits = tf.convert_to_tensor(logits, dtype=tf.float32)
+    logits.shape.assert_is_compatible_with(
+        tf.TensorShape(labels.shape[:-1].as_list() + [3]))
+
+    positive_logits = logits[..., :1]
+    classification_loss = tf.keras.losses.binary_crossentropy(
+        y_true=positive, y_pred=positive_logits, from_logits=True, axis=reduce_axis)
+
+    loc = tf.math.maximum(K.softplus(logits[..., 1:2]), tf.math.sqrt(K.epsilon()))
+    # loc = tf.math.maximum(tf.nn.relu(loc), tf.math.sqrt(K.epsilon()))
+    scale = tf.math.maximum(K.softplus(logits[..., 2:]), tf.math.sqrt(K.epsilon()))
+    safe_labels = positive * labels + (1 - positive) * K.ones_like(labels)
+    regression_loss = -K.mean(positive * (LogGamma(loc, scale)).log_prob(safe_labels),
+                              axis=reduce_axis
+                              )
+
+    logprob = (LogGamma(loc, scale)).log_prob(safe_labels)
+    isnan = tf.cast(tf.where(tf.math.is_nan(logprob)), dtype=tf.int32)
+    print(safe_labels[isnan[0].numpy().tolist()])
+    print(scale[isnan[0].numpy().tolist()])
+    print(loc[isnan[0].numpy().tolist()])
+    print(logprob[isnan[0].numpy().tolist()])
     return 0.5 * classification_loss + 0.5 * regression_loss
 
 
 @tf.function
-def embedding_smoothness(X, A, square=True):
+def embedding_smoothness_sparse(X, A, square=True):
     if isinstance(A, tf.Tensor):
         A = tf.sparse.from_dense(A)
     i, j = A.indices[:, 0], A.indices[:, 1]
@@ -216,13 +204,13 @@ class SparsityRegularizerLayer(l.Layer):
         return loss
 
 
-class EmbeddingSmoothnessRegularizer(l.Layer):
+class EmbeddingSmoothnessRegularizerSparse(l.Layer):
     def __init__(self, rate, **kwargs):
-        super(EmbeddingSmoothnessRegularizer, self).__init__(**kwargs)
+        super(EmbeddingSmoothnessRegularizerSparse, self).__init__(**kwargs)
         self.rate = rate
 
     def call(self, inputs, **kwargs):
-        loss = self.rate * embedding_smoothness(*inputs)
+        loss = self.rate * embedding_smoothness_sparse(*inputs)
         self.add_loss(loss)
         return loss
 

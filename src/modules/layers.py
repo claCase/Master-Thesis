@@ -73,27 +73,6 @@ class BilinearLayer(l.Layer):
 
 
 class Bilinear(l.Layer):
-    """def __init__(self, hidden_dim=5, activation=None, **kwargs):
-        super(Bilinear, self).__init__(**kwargs)
-        self.hidden_dim = hidden_dim
-        self.activation = activation
-        self.initializer = initializers.GlorotNormal()
-
-    def build(self, input_shape):
-        self.R = tf.Variable(
-            initial_value=self.initializer(shape=(self.hidden_dim, self.hidden_dim))
-        )
-        self.X = tf.Variable(
-            initial_value=self.initializer(shape=(input_shape[0], self.hidden_dim))
-        )
-
-    def call(self, inputs, **kwargs):
-        x_left = tf.matmul(self.X, self.R)
-        A = tf.matmul(x_left, x_left, transpose_b=True)
-        if self.activation is not None:
-            A = activations.get(self.activation)(A)
-        return self.X, A"""
-
     def __init__(
             self, hidden_dim=5, activation=None, dropout_rate=0.5, qr=True, **kwargs
     ):
@@ -112,7 +91,6 @@ class Bilinear(l.Layer):
             initial_value=self.initializer(shape=(input_shape[0], self.hidden_dim))
         )
         self.dense = tf.keras.layers.Dense(self.hidden_dim)
-        self.act = tf.keras.layers.LeakyReLU(alpha=0.3)
         if self.dropout_rate:
             self.dropout = tf.keras.layers.Dropout(self.dropout_rate)
 
@@ -126,6 +104,7 @@ class Bilinear(l.Layer):
         else:
             if self.dropout_rate:
                 X = self.dropout(self.X)
+
             x_left = tf.matmul(X, self.R)
             A = tf.matmul(x_left, X, transpose_b=True)
 
@@ -287,19 +266,19 @@ class SelfAttention(l.Layer):
             channels=10,
             attn_heads=5,
             dropout_rate=0.5,
-            lags=10,
             concat_heads=False,
             return_attn=False,
-            renormalize=False
+            renormalize=False,
+            initializer="GlorotNormal"
     ):
         super(SelfAttention, self).__init__()
         self.channels = channels
         self.attn_heads = attn_heads
         self.dropout_rate = dropout_rate
-        self.lags = lags
         self.concat_heads = concat_heads
         self.return_attn = return_attn
         self.renormalize = renormalize
+        self.initializer = initializers.get(initializer)
 
     def build(self, input_shape):
         """
@@ -309,9 +288,12 @@ class SelfAttention(l.Layer):
             - A: shape(NxTxT)
         """
         x, a = input_shape
-        self.q_w = self.add_weight(name="query", shape=(self.attn_heads, x[-1], self.channels))
-        self.k_w = self.add_weight(name="key", shape=(self.attn_heads, x[-1], self.channels))
-        self.v_w = self.add_weight(name="value", shape=(self.attn_heads, x[-1], self.channels))
+        self.q_w = self.add_weight(name="query", shape=(self.attn_heads, x[-1], self.channels),
+                                   initializer=self.initializer)
+        self.k_w = self.add_weight(name="key", shape=(self.attn_heads, x[-1], self.channels),
+                                   initializer=self.initializer)
+        self.v_w = self.add_weight(name="value", shape=(self.attn_heads, x[-1], self.channels),
+                                   initializer=self.initializer)
         '''self.temp_masking = tf.transpose(tf.where(tf.constant(
             [generate_list_lower_triang(a[0], a[-1], self.lags)] * self.attn_heads
         ) == 0.0, -1e10, 0), perm=(1, 0, 2, 3))'''

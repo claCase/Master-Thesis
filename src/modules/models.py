@@ -45,18 +45,26 @@ class TensorDecompositionModel(m.Model):
 
 
 class Bilinear(m.Model):
-    def __init__(self, hidden, activation="relu", use_mask=False, qr=True, **kwargs):
+    def __init__(self, hidden, activation="relu", use_mask=False, use_variance=False, qr=True, **kwargs):
         super(Bilinear, self).__init__(**kwargs)
         self.hidden = hidden
         self.use_mask = use_mask
         self.activation = activation
         self.qr = qr
+        self.use_variance = use_variance
 
     def build(self, input_shape):
         self.bilinear = layers.Bilinear(self.hidden, self.activation, qr=self.qr)
-        if self.use_mask:
+        if self.use_mask and not self.use_variance:
             self.bilinear_mask = layers.Bilinear(
                 self.hidden, activation="sigmoid", qr=self.qr
+            )
+        if self.use_variance and self.use_mask:
+            self.bilinear_var = layers.Bilinear(
+                self.hidden, activation=self.activation, qr=self.qr
+            )
+            self.bilinear_mask = layers.Bilinear(
+                self.hidden, activation=self.activation, qr=self.qr
             )
         # self.regularizer = losses.SparsityRegularizerLayer(0.5)
 
@@ -65,11 +73,16 @@ class Bilinear(m.Model):
         if self.use_mask:
             X_mask, A_mask = self.bilinear_mask(inputs)
             # A = tf.math.multiply(A, A_mask)
+        if self.use_variance:
+            X_var, A_var = self.bilinear_var(inputs)
         # Eliminate diagonal
         A = A * (tf.ones_like(A) - tf.eye(A.shape[0]))
         # A_flat = tf.reshape(A, [-1])
         # self.add_loss(self.regularizer(A_flat))
-        if self.use_mask:
+
+        if self.use_variance and self.use_mask:
+            return X, X_mask, X_var, A, A_mask, A_var
+        elif self.use_mask and not self.use_variance:
             return X, X_mask, A, A_mask
         else:
             return X, A
@@ -331,7 +344,7 @@ class MultiHeadGAT_BIL(m.Model):
                 inputs = self.mgats[i](inputs)
             if self.embedding_smoothness_rate:
                 self.add_loss(
-                    losses.EmbeddingSmoothnessRegularizer(
+                    losses.EmbeddingSmoothnessRegularizerSparse(
                         self.embedding_smoothness_rate
                     )(inputs)
                 )
@@ -360,7 +373,7 @@ class MultiHeadGAT_Inner(m.Model):
             inputs = self.mgats[i](inputs)
             if self.embedding_smoothness_rate:
                 self.add_loss(
-                    losses.EmbeddingSmoothnessRegularizer(
+                    losses.EmbeddingSmoothnessRegularizerSparse(
                         self.embedding_smoothness_rate
                     )(inputs)
                 )
@@ -389,7 +402,7 @@ class MultiHeadGAT_Flat(m.Model):
             inputs = self.mgats[i](inputs)
             if self.embedding_smoothness_rate:
                 self.add_loss(
-                    losses.EmbeddingSmoothnessRegularizer(
+                    losses.EmbeddingSmoothnessRegularizerSparse(
                         self.embedding_smoothness_rate
                     )(inputs)
                 )
@@ -418,7 +431,7 @@ class MultiHeadGAT_Classifier(m.Model):
             inputs = self.mgats[i](inputs)
             if self.embedding_smoothness_rate:
                 self.add_loss(
-                    losses.EmbeddingSmoothnessRegularizer(
+                    losses.EmbeddingSmoothnessRegularizerSparse(
                         self.embedding_smoothness_rate
                     )(inputs)
                 )
