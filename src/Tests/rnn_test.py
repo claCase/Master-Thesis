@@ -20,7 +20,7 @@ import matplotlib as mplt
 import matplotlib.pyplot as plt
 from src.graph_data_loader import plot_names
 from scipy import stats
-
+import tqdm
 
 class GRUGAT(l.Layer):
     def __init__(self, hidden_size=10, attn_heads=10, dropout=0.2, hidden_activation="relu"):
@@ -189,12 +189,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--save", action="store_true")
     parser.add_argument("--encoder", type=str, default="gat")
+    parser.add_argument("--epochs", type=int, default=50)
     args = parser.parse_args()
     save = args.save
     encoder = args.encoder
-
+    epochs = args.epochs
     n = 174
-    t = 30
+    t = 15
     os.chdir("../../")
     with open(
             os.path.join(os.getcwd(), "Data", "complete_data_final_transformed_no_duplicate.pkl"),
@@ -206,7 +207,7 @@ if __name__ == "__main__":
     )
     data_sp = tf.sparse.reorder(data_sp)
 
-    data_slice = tf.sparse.slice(data_sp, (20, 10, 0, 0), (t, 1, n, n))
+    data_slice = tf.sparse.slice(data_sp, (0, 40, 0, 0), (t, 35, n, n))
 
     data_dense = tf.sparse.reduce_sum(data_slice, 1)
     a = tf.expand_dims(data_dense, 1)
@@ -219,9 +220,10 @@ if __name__ == "__main__":
     else:
         rnn_cell = RNNGCNLognormal()
     optimizer = opt.Adam(0.001)
-    for e in range(120):
+    epochs = tqdm.tqdm(np.arange(epochs))
+
+    for e in epochs:
         h_t = None
-        initialize = True
         tot_loss = 0
         states = [None, None, None]
         with tf.GradientTape(persistent=True) as tape:
@@ -230,12 +232,14 @@ if __name__ == "__main__":
                                                                         states=states
                                                                         )
                 states = [h_prime_p, h_prime_mu, h_prime_sigma]
+
                 l = zero_inflated_lognormal_loss(labels=tf.expand_dims(a[t + 1], -1), logits=logits)
-                tot_loss = tot_loss + l
+                tot_loss = 0.5*tot_loss + 0.5*l
                 gradients = tape.gradient(tot_loss, rnn_cell.trainable_weights)
                 optimizer.apply_gradients(zip(gradients, rnn_cell.trainable_weights))
         loss_hist.append(tot_loss)
-        print(f"Epoch {e} Loss:{tot_loss.numpy()}")
+
+        #print(f"Epoch {e} Loss:{tot_loss.numpy()}")
 
     x_mu = tf.squeeze(h_prime_mu)
     x_var = tf.squeeze(h_prime_sigma)
