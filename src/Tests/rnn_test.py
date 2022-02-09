@@ -21,6 +21,9 @@ import matplotlib.pyplot as plt
 from src.graph_data_loader import plot_names
 from scipy import stats
 import tqdm
+import datetime
+import matplotlib.animation as animation
+
 
 class GRUGAT(l.Layer):
     def __init__(self, hidden_size=10, attn_heads=10, dropout=0.2, hidden_activation="relu"):
@@ -35,31 +38,34 @@ class GRUGAT(l.Layer):
         self.hidden_activation = hidden_activation
         self.hidden_size = (hidden_size // 2) * attn_heads
         self.drop = l.Dropout(dropout)
+        # self.state_size = self.hidden_size
 
-    def get_initial_state(self, inputs):
+    def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
         x, a = inputs
-        self.state_size = (*x.shape[:-1], self.hidden_size)
-        return tf.zeros(shape=(*self.state_size,))
+        return tf.zeros(shape=(*x.shape[:-1], self.hidden_size))
 
     def build(self, input_shape):
-        self.b_u = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal")
-        self.b_r = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal")
-        self.b_c = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal")
-        self.W_u = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal")
-        self.W_r = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal")
-        self.W_c = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal")
+        self.b_u = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal", name="b_u")
+        self.b_r = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal", name="b_r")
+        self.b_c = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal", name="b_c")
+        self.W_u = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal",
+                                   name="W_u")
+        self.W_r = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal",
+                                   name="W_r")
+        self.W_c = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal",
+                                   name="W_c")
 
-    def call(self, inputs, states, training, *args, **kwargs):
+    def call(self, inputs, state, training, *args, **kwargs):
         x, a = inputs
-        if states is None:
+        # Encoding
+        if state is None:
             h = self.get_initial_state(inputs)
         else:
-            h = states
+            h = state
 
-        # Encoding
-        conv_u = self.gnn_u(inputs, training=training)
-        conv_r = self.gnn_r(inputs, training=training)
-        conv_c = self.gnn_c(inputs, training=training)
+        conv_u = self.gnn_u(inputs, training=training)  # T x N x d
+        conv_r = self.gnn_r(inputs, training=training)  # T x N x d
+        conv_c = self.gnn_c(inputs, training=training)  # T x N x d
 
         # Recurrence
         u = tf.nn.sigmoid(self.b_u + tf.concat([conv_u, h], -1) @ self.W_u)
@@ -83,6 +89,7 @@ class GRUGCN(l.Layer):
         self.hidden_activation = hidden_activation
         self.hidden_size = hidden_size
         self.drop = l.Dropout(dropout)
+        self.state_size = self.hidden_size
 
     def get_initial_state(self, inputs):
         x, a = inputs
@@ -106,6 +113,7 @@ class GRUGCN(l.Layer):
 
         # Encoding
         a = gcn_filter(a.numpy(), symmetric=False)
+        inputs = [a, inputs[1]]
         conv_u = self.gnn_u(inputs, training=training)
         conv_r = self.gnn_r(inputs, training=training)
         conv_c = self.gnn_c(inputs, training=training)
@@ -120,7 +128,7 @@ class GRUGCN(l.Layer):
 
 
 class RNNGATLognormal(m.Model):
-    def __init__(self, hidden_size=5, attn_heads=5, dropout=0.2, hidden_activation="relu"):
+    def __init__(self, hidden_size=10, attn_heads=10, dropout=0.2, hidden_activation="relu"):
         super(RNNGATLognormal, self).__init__()
         # Encoders
         self.GatRnn_p = GRUGAT(hidden_size=hidden_size, attn_heads=attn_heads, dropout=dropout,
@@ -195,7 +203,7 @@ if __name__ == "__main__":
     encoder = args.encoder
     epochs = args.epochs
     n = 174
-    t = 15
+    t = 20
     os.chdir("../../")
     with open(
             os.path.join(os.getcwd(), "Data", "complete_data_final_transformed_no_duplicate.pkl"),
@@ -207,10 +215,10 @@ if __name__ == "__main__":
     )
     data_sp = tf.sparse.reorder(data_sp)
 
-    data_slice = tf.sparse.slice(data_sp, (0, 40, 0, 0), (t, 35, n, n))
+    data_slice = tf.sparse.slice(data_sp, (40, 31, 0, 0), (t, 1, n, n))
 
     data_dense = tf.sparse.reduce_sum(data_slice, 1)
-    a = tf.expand_dims(data_dense, 1)
+    a_train = tf.expand_dims(data_dense, 1)
     Xt = [np.eye(n)] * t
     x = np.asarray(Xt, dtype=np.float32)
     x = tf.expand_dims(x, 1)
@@ -219,27 +227,24 @@ if __name__ == "__main__":
         rnn_cell = RNNGATLognormal()
     else:
         rnn_cell = RNNGCNLognormal()
+
     optimizer = opt.Adam(0.001)
     epochs = tqdm.tqdm(np.arange(epochs))
-
     for e in epochs:
-        h_t = None
         tot_loss = 0
         states = [None, None, None]
         with tf.GradientTape(persistent=True) as tape:
-            for t in range(a.shape[0] - 1):
-                logits, h_prime_p, h_prime_mu, h_prime_sigma = rnn_cell([x[t], a[t]],
-                                                                        states=states
-                                                                        )
+            for t in range(a_train.shape[0] - 10):
+                logits, h_prime_p, h_prime_mu, h_prime_sigma = rnn_cell([x[t], a_train[t]], states=states, training=True)
                 states = [h_prime_p, h_prime_mu, h_prime_sigma]
-
-                l = zero_inflated_lognormal_loss(labels=tf.expand_dims(a[t + 1], -1), logits=logits)
-                tot_loss = 0.5*tot_loss + 0.5*l
+                l = zero_inflated_lognormal_loss(labels=tf.expand_dims(a_train[t + 1], -1), logits=logits)
+                tot_loss = 0.5 * tot_loss + 0.5 * l
                 gradients = tape.gradient(tot_loss, rnn_cell.trainable_weights)
                 optimizer.apply_gradients(zip(gradients, rnn_cell.trainable_weights))
+                if not t % 4:
+                    tape.reset()
         loss_hist.append(tot_loss)
-
-        #print(f"Epoch {e} Loss:{tot_loss.numpy()}")
+        # print(f"Epoch {e} Loss:{tot_loss.numpy()}")
 
     x_mu = tf.squeeze(h_prime_mu)
     x_var = tf.squeeze(h_prime_sigma)
@@ -249,16 +254,23 @@ if __name__ == "__main__":
     a_t = tf.math.log(a_t)
     a_t = tf.clip_by_value(a_t, 0.0, 1e12)
     a_t = a_t.numpy()
-    a = tf.clip_by_value(tf.math.log(a[-1].numpy()[0]), 0.0, 1e12)
+    a = tf.clip_by_value(tf.math.log(a_train[-1].numpy()[0]), 0.0, 1e12)
     a = a.numpy()
 
+    today = datetime.datetime.now().isoformat().replace(":", "_")
+    weights_dir = os.path.join(os.getcwd(), "src", "Tests", "Rnn Bilinear Lognormal", today, "Weights")
+    figures_dir = os.path.join(os.getcwd(), "src", "Tests", "Rnn Bilinear Lognormal", today, "Figures")
+    if save:
+        os.makedirs(weights_dir)
+        os.makedirs(figures_dir)
+        rnn_cell.save_weights(os.path.join(weights_dir, "gat_rnn"))
     ############################################# PLOTTING #############################################################
     loss_hist = np.asarray(loss_hist)
     mplt.rcParams['figure.figsize'] = (15, 10)
     plt.plot(loss_hist)
     plt.title("Loss History")
     if save:
-        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "loss.png"))
+        plt.savefig(os.path.join(figures_dir, "loss.png"))
         plt.close()
 
     plt.figure()
@@ -266,7 +278,7 @@ if __name__ == "__main__":
     plt.colorbar()
     plt.title("True Adj")
     if save:
-        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "adj_true.png"))
+        plt.savefig(os.path.join(figures_dir, "adj_true.png"))
         plt.close()
 
     plt.figure()
@@ -274,7 +286,7 @@ if __name__ == "__main__":
     plt.colorbar()
     plt.title("Pred Weighted Adj")
     if save:
-        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "adj_pred.png"))
+        plt.savefig(os.path.join(figures_dir, "adj_pred.png"))
         plt.close()
 
     plt.figure()
@@ -283,7 +295,7 @@ if __name__ == "__main__":
     plt.colorbar()
     plt.title("Difference Weighted - True Adj")
     if save:
-        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "error.png"))
+        plt.savefig(os.path.join(figures_dir, "error.png"))
         plt.close()
 
     scale = tf.math.maximum(
@@ -295,7 +307,7 @@ if __name__ == "__main__":
     plt.colorbar()
     plt.title("Variance")
     if save:
-        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "adj_variance.png"))
+        plt.savefig(os.path.join(figures_dir, "adj_variance.png"))
         plt.close()
 
     x_tnse = TSNE(n_components=2, perplexity=80).fit_transform(x_mu.numpy())
@@ -310,8 +322,7 @@ if __name__ == "__main__":
     ax.set_title("Mean Embedding")
     plot_names(x_tnse, ax)
     if save:
-        plt.savefig(
-            os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "embeddings_mean.png"))
+        plt.savefig(os.path.join(figures_dir, "embeddings_mean.png"))
         plt.close()
 
     x_tnse_var = TSNE(n_components=2, perplexity=80).fit_transform(x_var.numpy())
@@ -327,7 +338,7 @@ if __name__ == "__main__":
     plot_names(x_tnse_var, ax1)
     if save:
         plt.savefig(
-            os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "embeddings_var.png"))
+            os.path.join(figures_dir, "embeddings_var.png"))
         plt.close()
 
     a_pred = a_t.flatten()
@@ -341,7 +352,7 @@ if __name__ == "__main__":
     plt.legend()
     if save:
         plt.savefig(
-            os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "edge_distr.png"))
+            os.path.join(figures_dir, "edge_distr.png"))
         plt.close()
 
     plt.figure()
@@ -349,14 +360,14 @@ if __name__ == "__main__":
     plt.hist(diff.flatten(), bins=100)
     if save:
         plt.savefig(
-            os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "true_pred_edge_distr.png"))
+            os.path.join(figures_dir, "true_pred_edge_distr.png"))
         plt.close()
 
     plt.figure()
     stats.probplot(diff.flatten(), dist="norm", plot=plt)
     plt.title("QQ-plot True-Pred")
     if save:
-        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "error_distr.png"))
+        plt.savefig(os.path.join(figures_dir, "error_distr.png"))
         plt.close()
 
     '''R = model.layers[0].trainable_weights[0]
@@ -366,7 +377,7 @@ if __name__ == "__main__":
     plt.colorbar()
     plt.title("R Coefficient")
     if save:
-        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "coeff_R.png"))
+        plt.savefig(os.path.join(figures_dir, "Rnn Bilinear Lognormal", today,"coeff_R.png"))
         plt.close()
 
     plt.figure()
@@ -375,7 +386,7 @@ if __name__ == "__main__":
     plt.title("X embeddings")
     plt.tight_layout()
     if save:
-        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "x_embs.png"))
+        plt.savefig(os.path.join(figures_dir, "Rnn Bilinear Lognormal", today,"x_embs.png"))
         plt.close()
     '''
 
@@ -388,9 +399,10 @@ if __name__ == "__main__":
     plt.title("ROC Curve")
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
+    plt.plot((0,1), (0,1))
     plt.colorbar()
     if save:
-        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "roc.png"))
+        plt.savefig(os.path.join(figures_dir, "roc.png"))
         plt.close()
 
     plt.figure()
@@ -401,7 +413,7 @@ if __name__ == "__main__":
     plt.ylabel("Recall")
     plt.colorbar()
     if save:
-        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "prec_rec.png"))
+        plt.savefig(os.path.join(figures_dir, "prec_rec.png"))
         plt.close()
 
     plt.figure()
@@ -412,7 +424,34 @@ if __name__ == "__main__":
     plt.plot((0.5, 0.5), (0, 70), lw=1)
     plt.legend()
     if save:
-        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Rnn Bilinear Lognormal", "distr_preds.png"))
+        plt.savefig(os.path.join(figures_dir, "distr_preds.png"))
         plt.close()
 
+    # Prediction
+    states = [None, None, None]
+    t_samples = []
+    for t in range(a_train.shape[0] - 10):
+        logits, h_prime_p, h_prime_mu, h_prime_sigma = rnn_cell([x[t], a_train[t]], states=states, training=False)
+        states = [h_prime_p, h_prime_mu, h_prime_sigma]
+        sample = tf.squeeze(zero_inflated_lognormal(logits).sample(1)).numpy()
+        t_samples.append(sample)
+
+    a = tf.squeeze(tf.clip_by_value(tf.math.log(a_train), 0, 1e100)).numpy()
+    fig, ax = plt.subplots(1, 2)
+
+
+    def update(i):
+        ax[0].clear()
+        ax[1].clear()
+        fig.suptitle(f"Year {10 + i}")
+        ax[0].set_title("Pred")
+        t = ax[0].imshow(a[i], animated=True)
+        ax[1].set_title("True")
+        p = ax[1].imshow(t_samples[i], animated=True)
+
+
+    anim = animation.FuncAnimation(fig, update, frames=a.shape[0] - 1, repeat=True)
+    if save:
+        anim.save("./src/Tests/Figures/RNN-GATBIL/adj_animation.gif", writer="pillow")
+        plt.close(fig)
     plt.show()
