@@ -10,7 +10,6 @@ from src.modules.layers import BilinearDecoderDense, BilinearDecoderSparse
 from src.modules.losses import (
     square_loss,
     mse_uncertainty,
-    embedding_smoothness,
     DensePenalizedMSE,
 )
 from src.modules.utils import generate_list_lower_triang, sum_gradients

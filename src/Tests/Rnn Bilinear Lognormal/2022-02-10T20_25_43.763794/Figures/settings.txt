@@ -1,0 +1,5 @@
+encoder_type: gat 
+training_years: from 1964 to 2009
+pred_years: from 2009 to 2019
+dropout_rate: 0.2
+sparse: True

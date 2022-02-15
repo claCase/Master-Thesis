@@ -3,7 +3,6 @@ import tensorflow.keras as k
 from tensorflow.keras.losses import MeanSquaredError as mse
 from src.modules.models import GAT_BIL_spektral_dense, GAT_BIL_spektral
 from src.modules.losses import square_loss
-from src.modules.losses import embedding_smoothness
 import numpy as np
 from scipy.linalg import block_diag
 import matplotlib.pyplot as plt

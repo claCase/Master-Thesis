@@ -1,6 +1,7 @@
 import numpy as np
 import tensorflow as tf
 import tensorflow.keras as k
+from tensorflow_probability import distributions as tfd
 import matplotlib.pyplot as plt
 import tqdm
 import argparse
@@ -90,7 +91,7 @@ class RnnBil(k.models.Model):
         x_rec = self.ln_rnn(x_rec)
         if self.residual_con:
             x_rec = tf.concat([x_enc, x_rec], -1)
-        _, A = self.decoder([x_rec, a])
+        _, A = self.decoder(x_rec)
         return x_rec, A
 
 
@@ -176,7 +177,7 @@ class GatBil(k.models.Model):
         x_rec = tf.transpose(x_rec, (1, 0, 2))  # TxNxd
         if self.residual_con:
             x_rec = tf.concat([x_enc, x_rec], -1)
-        _, A = self.decoder([x_rec, a])
+        _, A = self.decoder(x_rec)
         if self.return_attn_coef:
             return x_rec, A, attn_coeff
         else:
@@ -271,6 +272,7 @@ if __name__ == "__main__":
     At_test_in = At[:-1] * test_mask[:-1]
     At_test_out = At[1:] * test_mask[1:]
 
+
     def train(temp_loss=True, rnn_type="gat", binary=False):
         dropout_rate = 0.1
         if rnn_type == "gat":
@@ -326,6 +328,10 @@ if __name__ == "__main__":
                     loss_train = k.losses.binary_crossentropy(At_flat_train, a_flat_train)
                     loss_test = k.losses.binary_crossentropy(At_flat_test, a_flat_test)
                 else:
+                    '''loss_train = tfd.Normal(a_flat_train, tf.ones_like(a_flat_train)).log_prob(At_flat_train)
+                    loss_train = tf.reduce_mean(loss_train)
+                    loss_test = tfd.Normal(a_flat_test, tf.ones_like(a_flat_test)).log_prob(At_flat_test)
+                    loss_test = tf.reduce_mean(loss_test)'''
                     loss_train = k.losses.mean_squared_error(At_flat_train, a_flat_train)
                     loss_test = k.losses.mean_squared_error(At_flat_test, a_flat_test)
                 if temp_loss and not binary:
@@ -340,14 +346,23 @@ if __name__ == "__main__":
             loss_hist.append((loss_train, loss_test))
             # optimizer.apply_gradients(zip(mean_grads, model.trainable_weights))
             bar.update(1)
-        return model, attn_coeff_train, attn_coeff_test, a_train, a_test, loss_hist
+        if rnn_type == "gat" or rnn_type == "transformer":
+            return model, attn_coeff_train, attn_coeff_test, a_train, a_test, loss_hist
+        else:
+            return model, a_train, a_test, loss_hist
+
 
     loss_histories = []
-    test_losses = (False, "euclidian", "rotation", "angle")
+    test_losses = (False,)  # "euclidian", "rotation", "angle")
     for loss_type in test_losses:
-        model, attn_coeff_train, attn_coeff_test, a_train, a_test, loss_hist = train(temp_loss=loss_type,
-                                                                                     rnn_type=rnn_type,
-                                                                                     binary=binary)
+        if rnn_type == "rnn":
+            model, a_train, a_test, loss_hist = train(temp_loss=loss_type,
+                                                      rnn_type=rnn_type,
+                                                      binary=binary)
+        else:
+            model, attn_coeff_train, attn_coeff_test, a_train, a_test, loss_hist = train(temp_loss=loss_type,
+                                                                                         rnn_type=rnn_type,
+                                                                                         binary=binary)
         loss_histories.append(loss_hist)
 
     # model.save_weights("./RNN-GATBIL/Model")
@@ -361,6 +376,8 @@ if __name__ == "__main__":
     legend_names = [name for names in legend_names for name in names]
     plots = [plot for plots in losses_plots for plot in plots]
     plt.legend(plots, legend_names)
+    plt.savefig("./src/Tests/Figures/RNNBIL/losses.png")
+    plt.close()
 
     if rnn_type == "gat":
         row, col = 2, 2
@@ -374,7 +391,8 @@ if __name__ == "__main__":
             for j in range(col):
                 axs[i, j].imshow(mean_attn[counter])
                 counter += 1
-
+        plt.savefig("./src/Tests/Figures/RNNBIL/attention_coeff_gat.png", fig=fig2)
+        plt.close(fig2)
     if rnn_type == "transformer":
         row, col = 2, 2
         fig2, axs = plt.subplots(row, col)
@@ -385,9 +403,10 @@ if __name__ == "__main__":
             for j in range(col):
                 axs[i, j].imshow(mean_attn[counter])
                 counter += 1
+        plt.savefig("./src/Tests/Figures/RNNBIL/attention_coeff_transformer.png", fig=fig2)
+        plt.close(fig2)
 
     fig, ax = plt.subplots(1, 2)
-
 
     def update(i):
         ax[0].clear()
@@ -398,15 +417,15 @@ if __name__ == "__main__":
         ax[1].set_title("True")
         p = ax[1].imshow(At_train_out[i], animated=True)
 
-
     anim = animation.FuncAnimation(fig, update, frames=len(a_train) - 1, repeat=True)
+    anim.save("./src/Tests/Figures/RNNBIL/adj_anim.gif", writer="pillow")
 
     fig1, ax1 = plt.subplots(1, 1)
-
     if binary:
         threshold = -0.01
     else:
         threshold = 0.5
+
 
     def update2(i):
         ax1.clear()
@@ -414,7 +433,7 @@ if __name__ == "__main__":
         a_pred = a_train[i].numpy().flatten()
         a_pred = a_pred[a_pred > threshold]
         if binary:
-            a_pred = np.asarray(a_pred>0.5, dtype=np.float32)
+            a_pred = np.asarray(a_pred > 0.5, dtype=np.float32)
         a_true = At_train_out[i].numpy().flatten()
         a_true = a_true[a_true > threshold]
         ax1.hist(a_true, bins=60, alpha=0.5, color="blue", density=True, label="True")
@@ -423,7 +442,7 @@ if __name__ == "__main__":
 
 
     anim2 = animation.FuncAnimation(fig1, update2, frames=len(a_train) - 1, repeat=True)
-
+    anim2.save("./src/Tests/Figures/RNNBIL/hist_anim.gif", writer="pillow")
     """writer = animation.FFMpegWriter(50)
     anim.save(
         "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\src\\Tests\\Figures\\RNN-GATBIL\\animation.gif",

@@ -10,27 +10,9 @@ import matplotlib.pyplot as plt
 import tqdm
 import pickle as pkl
 import argparse
+from src.modules.utils import generate_data_block_matrix
 
 
-def generate_data_block_matrix(data, sparse=True):
-    t, r, n = data.shape[0], data.shape[1], data.shape[2]
-    times = []
-    for i in range(t):
-        times.append(block_diag(*data[i]))
-    block = block_diag(*times)
-    diag_inputs = np.ones(t * r * n) * 15
-    diag = np.empty(block.shape)
-    index = 0
-    tot_values = diag.shape[0]
-    for i in range(t):
-        for j in range(r):
-            index += 1
-            diag_upper = np.diagflat(diag_inputs, index * n)[:tot_values, :tot_values]
-            diag_lower = np.diagflat(diag_inputs, -index * n)[:tot_values, :tot_values]
-            diag += diag_upper + diag_lower
-    if sparse:
-        return tf.sparse.from_dense(block), tf.sparse.from_dense(diag)
-    return block, diag
 
 
 def generate_synthetic_block_matrix(time, relations, nodes, sparse=True):

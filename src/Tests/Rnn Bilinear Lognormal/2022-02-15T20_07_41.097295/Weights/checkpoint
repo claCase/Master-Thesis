@@ -1,0 +1,2 @@
+model_checkpoint_path: "gat_rnn"
+all_model_checkpoint_paths: "gat_rnn"

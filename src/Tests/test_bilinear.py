@@ -6,6 +6,7 @@ from src.modules import models, losses, layers, utils
 from sklearn.manifold import TSNE
 from sklearn.cluster import DBSCAN, SpectralClustering
 import matplotlib.pyplot as plt
+import matplotlib as mplt
 from matplotlib import cm
 import scipy.stats as stats
 from src.graph_data_loader import plot_names
@@ -14,16 +15,19 @@ import os
 import argparse
 from src.modules.losses import zero_inflated_lognormal_loss
 from src.modules.utils import zero_inflated_lognormal
+from sklearn.metrics import roc_curve, roc_auc_score, precision_recall_curve
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--normalize", action="store_true")
     parser.add_argument("--mask", action="store_true")
     parser.add_argument("--lognormal", action="store_true")
+    parser.add_argument("--save", action="store_true")
     args = parser.parse_args()
     normalize = args.normalize
     use_mask = args.mask
     lognormal = args.lognormal
+    save = args.save
 
     os.chdir("../../")
     print(os.getcwd())
@@ -47,8 +51,7 @@ if __name__ == "__main__":
     data_slice = tf.sparse.slice(data_sp, (50, 30, 0, 0), (1, 1, 174, 174))
     data_dense = tf.sparse.reduce_sum(data_slice, (0, 1))
     if not lognormal:
-        data_dense += 1
-        data_dense = tf.math.log(data_dense)
+        data_dense = tf.clip_by_value(tf.math.log(data_dense), 0.0, 1e100)
         if normalize:
             data_dense = (data_dense - tf.reduce_mean(data_dense, (0, 1))) / (
                 tf.math.reduce_std(data_dense, (0, 1))
@@ -103,14 +106,27 @@ if __name__ == "__main__":
     else:
         A_log = tf.clip_by_value(data_dense, 0.0, 1e12)
     loss_hist = np.asarray(loss_hist)
+    mplt.rcParams['figure.figsize'] = (15, 10)
     plt.plot(loss_hist)
     plt.title("Loss History")
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "loss.png"))
+        plt.close()
+
     x0_tnse = TSNE(n_components=2, perplexity=80).fit_transform(x0.numpy())
     plot_names(x0_tnse)
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "embeddings_initial.png"))
+        plt.close()
+
     plt.figure()
     plt.imshow(A_log.numpy())
     plt.colorbar()
     plt.title("True Adj")
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "adj_true.png"))
+        plt.close()
+
     plt.figure()
     if lognormal:
         logn = zero_inflated_lognormal(logits).sample(1)
@@ -123,19 +139,30 @@ if __name__ == "__main__":
         plt.imshow(a.numpy())
     plt.colorbar()
     plt.title("Pred Weighted Adj")
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "adj_pred.png"))
+        plt.close()
+
     plt.figure()
     diff = a.numpy() - A_log.numpy()
     plt.imshow(diff)
     plt.colorbar()
     plt.title("Difference Weighted - True Adj")
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "abs_error.png"))
+        plt.close()
 
     scale = tf.math.maximum(
         k.backend.softplus(logits[..., 2:]),
         tf.math.sqrt(k.backend.epsilon()))
+
     plt.figure()
     plt.imshow(scale.numpy().squeeze())
     plt.colorbar()
     plt.title("Variance")
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "adj_variance.png"))
+        plt.close()
 
     x_tnse = TSNE(n_components=2, perplexity=80).fit_transform(x.numpy())
     clustering = SpectralClustering(n_clusters=10, affinity="nearest_neighbors").fit(
@@ -148,6 +175,9 @@ if __name__ == "__main__":
     ax.scatter(x_tnse[:, 0], x_tnse[:, 1], color=colors)
     ax.set_title("Mean Embedding")
     plot_names(x_tnse, ax)
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "embeddings_mean.png"))
+        plt.close()
 
     x_tnse_var = TSNE(n_components=2, perplexity=80).fit_transform(x_var.numpy())
     clustering = SpectralClustering(n_clusters=10, affinity="nearest_neighbors").fit(
@@ -160,10 +190,13 @@ if __name__ == "__main__":
     ax1.scatter(x_tnse_var[:, 0], x_tnse_var[:, 1], color=colors)
     ax1.set_title("Variance Embedding")
     plot_names(x_tnse_var, ax1)
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "embeddings_var.png"))
+        plt.close()
 
     if lognormal:
         a_pred = a.numpy().flatten()
-        a_pred = a_pred[a_pred >0.2]
+        a_pred = a_pred[a_pred > 0.2]
     elif use_mask:
         a_pred = (a * a_m).numpy().flatten()
         a_pred = a_pred[a_pred > 0.2]
@@ -172,17 +205,30 @@ if __name__ == "__main__":
         a_pred = a_pred[a_pred > 0.2]
     a_true = A_log.numpy().flatten()
     a_true = a_true[a_true > 0.2]
+
     plt.figure()
     plt.hist(a_pred, 100, color="red", alpha=0.5, density=True, label="Pred")
     plt.hist(a_true, 100, color="blue", alpha=0.5, density=True, label="True")
     plt.legend()
+    if save:
+        plt.savefig(
+            os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "edge_distr.png"))
+        plt.close()
+
     plt.figure()
     diff = diff[(diff > 0.01) | (diff < -0.01)]
     plt.hist(diff.flatten(), bins=100)
+    if save:
+        plt.savefig(
+            os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "true_pred_edge_distr.png"))
+        plt.close()
 
     plt.figure()
     stats.probplot(diff.flatten(), dist="norm", plot=plt)
     plt.title("QQ-plot True-Pred")
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "error_distr.png"))
+        plt.close()
 
     R = model.layers[0].trainable_weights[0]
     X = model.layers[0].trainable_weights[1]
@@ -190,10 +236,53 @@ if __name__ == "__main__":
     plt.imshow(R.numpy())
     plt.colorbar()
     plt.title("R Coefficient")
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "coeff_R.png"))
+        plt.close()
 
     plt.figure()
     img = plt.imshow(X.numpy().T)
     plt.colorbar(img, fraction=0.0046, pad=0.04)
     plt.title("X embeddings")
     plt.tight_layout()
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "x_embs.png"))
+        plt.close()
+
+    plt.figure()
+    bin_true = tf.reshape(tf.where(A_log == 0, 0.0, 1.0), [-1]).numpy()
+    p_pred = tf.reshape(tf.nn.sigmoid(logits[..., :1]), [-1]).numpy()
+    fpr, tpr, thr = roc_curve(bin_true, p_pred, drop_intermediate=False)
+    cmap = cm.get_cmap("viridis")
+    plt.scatter(fpr, tpr, color=cmap(thr), s=2)
+    plt.title("ROC Curve")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.colorbar()
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "roc.png"))
+        plt.close()
+
+    plt.figure()
+    prec, rec, thr = precision_recall_curve(bin_true, p_pred)
+    plt.scatter(prec[:-1], rec[:-1], color=cmap(thr), s=2)
+    plt.title("Precision Recall Curve")
+    plt.xlabel("Precision")
+    plt.ylabel("Recall")
+    plt.colorbar()
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "prec_rec.png"))
+        plt.close()
+
+    plt.figure()
+    true_pos = p_pred[bin_true == 1]
+    false_negative = p_pred[bin_true == 0]
+    plt.hist(true_pos, bins=100, density=True, alpha=0.4, color="green", label="positive preds")
+    plt.hist(false_negative, bins=100, density=True, alpha=0.4, color="red", label="negative preds")
+    plt.plot((0.5,0.5), (0,70), lw=1)
+    plt.legend()
+    if save:
+        plt.savefig(os.path.join(os.getcwd(), "src", "Tests", "Figures", "Bilinear Lognormal", "distr_preds.png"))
+        plt.close()
+
     plt.show()

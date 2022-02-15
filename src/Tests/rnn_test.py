@@ -3,9 +3,7 @@ import tensorflow as tf
 from src.modules.layers import GCNDirected
 import tensorflow.keras.layers as l
 import tensorflow.keras.models as m
-import tensorflow.keras.activations as act
 import tensorflow.keras.optimizers as opt
-import tensorflow.keras.backend as k
 from spektral.layers import GATConv, GCNConv
 from spektral.utils.convolution import gcn_filter
 from src.modules.layers import BatchBilinearDecoderDense
@@ -19,14 +17,13 @@ from sklearn.manifold import TSNE
 from sklearn.cluster import SpectralClustering
 import matplotlib as mplt
 import matplotlib.pyplot as plt
-from src.graph_data_loader import plot_names
+from src.modules.plotter import plot_names
 from scipy import stats
 import tqdm
 import datetime
 import matplotlib.animation as animation
-from networkx import in_degree_centrality, out_degree_centrality
-from networkx.convert_matrix import from_numpy_matrix
-import networkx as nx
+from src.modules.losses import TemporalSmoothness
+from src.modules.utils import generate_data_relational_block_matrix, mask_sparse
 
 
 class GRUGAT(l.Layer):
@@ -43,6 +40,8 @@ class GRUGAT(l.Layer):
         self.hidden_size = (hidden_size // 2) * attn_heads
         self.drop = l.Dropout(dropout)
         # self.state_size = self.hidden_size
+        self.state_size = self.hidden_size
+        self.output_size = self.hidden_size
 
     def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
         x, a = inputs
@@ -101,12 +100,15 @@ class GRUGCN(l.Layer):
         return tf.zeros(shape=(*self.state_size,))
 
     def build(self, input_shape):
-        self.b_u = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal")
-        self.b_r = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal")
-        self.b_c = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal")
-        self.W_u = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal")
-        self.W_r = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal")
-        self.W_c = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal")
+        self.b_u = self.add_weight(name="b_u", shape=(self.hidden_size,), initializer="glorot_normal")
+        self.b_r = self.add_weight(name="b_r", shape=(self.hidden_size,), initializer="glorot_normal")
+        self.b_c = self.add_weight(name="b_c", shape=(self.hidden_size,), initializer="glorot_normal")
+        self.W_u = self.add_weight(name="W_u", shape=(self.hidden_size * 2, self.hidden_size),
+                                   initializer="glorot_normal")
+        self.W_r = self.add_weight(name="W_r", shape=(self.hidden_size * 2, self.hidden_size),
+                                   initializer="glorot_normal")
+        self.W_c = self.add_weight(name="W_c", shape=(self.hidden_size * 2, self.hidden_size),
+                                   initializer="glorot_normal")
 
     def call(self, inputs, states, training, *args, **kwargs):
         x, a = inputs
@@ -149,15 +151,17 @@ class GRUGCNDirected(l.Layer):
         return tf.zeros(shape=(*self.state_size,))
 
     def build(self, input_shape):
-        self.b_u = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal")
-        self.b_r = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal")
-        self.b_c = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal")
-        self.W_u = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal")
-        self.W_r = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal")
-        self.W_c = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal")
+        self.b_u = self.add_weight(name="b_u", shape=(self.hidden_size,), initializer="glorot_normal")
+        self.b_r = self.add_weight(name="b_r", shape=(self.hidden_size,), initializer="glorot_normal")
+        self.b_c = self.add_weight(name="b_c", shape=(self.hidden_size,), initializer="glorot_normal")
+        self.W_u = self.add_weight(name="W_u", shape=(self.hidden_size * 2, self.hidden_size),
+                                   initializer="glorot_normal")
+        self.W_r = self.add_weight(name="W_r", shape=(self.hidden_size * 2, self.hidden_size),
+                                   initializer="glorot_normal")
+        self.W_c = self.add_weight(name="W_c", shape=(self.hidden_size * 2, self.hidden_size),
+                                   initializer="glorot_normal")
 
     def call(self, inputs, states, training, *args, **kwargs):
-        x, a = inputs
         if states is None:
             h = self.get_initial_state(inputs)
         else:
@@ -294,11 +298,11 @@ class GRUGCNDirectedLognormal(m.Model):
         super(GRUGCNDirectedLognormal, self).__init__()
         # Encoders
         self.GatRnn_p = GRUGCNDirected(hidden_size=hidden_size, dropout=dropout,
-                               hidden_activation=hidden_activation)
+                                       hidden_activation=hidden_activation)
         self.GatRnn_mu = GRUGCNDirected(hidden_size=hidden_size, dropout=dropout,
-                                hidden_activation=hidden_activation)
+                                        hidden_activation=hidden_activation)
         self.GatRnn_sigma = GRUGCNDirected(hidden_size=hidden_size, dropout=dropout,
-                                   hidden_activation=hidden_activation)
+                                           hidden_activation=hidden_activation)
 
         # Decoders
         self.decoder_mu = BatchBilinearDecoderDense(activation=None, qr=False)
@@ -366,6 +370,9 @@ if __name__ == "__main__":
     parser.add_argument("--test_split", type=float, default=0.2)
     parser.add_argument("--sparse", action="store_true")
     parser.add_argument("--baci", action="store_true")
+    parser.add_argument("--features", action="store_true")
+    parser.add_argument("--block", action="store_true")
+    parser.add_argument("--smooth", action="store_true")
     args = parser.parse_args()
     save = args.save
     encoder = args.encoder
@@ -376,16 +383,28 @@ if __name__ == "__main__":
     test_split = args.test_split
     sparse = args.sparse
     baci = args.baci
+    features = args.features
+    block = args.block
+    smooth = args.smooth
 
-    n = 174
-    os.chdir("../../")
+    if block:
+        r = 3
+    else:
+        r=1
+
     if baci:
         with open(os.path.join(os.getcwd(), "Data", "baci_sparse_price.pkl"), "rb") as file:
-            t = 25
+            t = 26
+            n = 50
             data = pkl.load(file)
             data = tf.sparse.reorder(data)
-            data_slice = tf.sparse.slice(data, (0, 0, 0, 31), (t, n, n, 1))
-            data_dense = tf.sparse.reduce_sum(data_slice, -1)
+            data_slice = tf.sparse.slice(data, (0, 0, 0, 10), (t, n, n, r))
+            data_slice = tf.sparse.transpose(data_slice, perm=(0,3,1,2))
+            if block:
+                data_dense = tf.sparse.to_dense(data_slice)
+            else:
+                data_dense = tf.sparse.reduce_sum(data_slice, 1)
+
     else:
         with open(
                 os.path.join(os.getcwd(), "Data", "complete_data_final_transformed_no_duplicate.pkl"),
@@ -396,19 +415,35 @@ if __name__ == "__main__":
             data_np[:, :4], data_np[:, 4], np.max(data_np, 0)[:4] + 1
         )
         data_sp = tf.sparse.reorder(data_sp)
-        t = 55
-        data_slice = tf.sparse.slice(data_sp, (0, 31, 0, 0), (t, 1, n, n))
-        data_dense = tf.sparse.reduce_sum(data_slice, 1)
+        t = 56
+        n = 174
+        data_slice = tf.sparse.slice(data_sp, (0, 10, 0, 0), (t, r, n, n))
+        if not block:
+            data_dense = tf.sparse.reduce_sum(data_slice, 1)
 
+    if block:
+        data_dense, diag = generate_data_relational_block_matrix(data_dense, sparse=False)
+        diag = tf.cast(tf.expand_dims(diag, 1), tf.float32)
     a_train = tf.expand_dims(data_dense, 1)
-    times = []
-    time_range = np.linspace(0, a_train.shape[0], a_train.shape[0])
-    for i in range(4):
-        time = np.cos(time_range * np.pi / (1+i*2))
-        times.append(time)
-    times_embedding = np.asarray([times] * a_train.shape[-1]).swapaxes(0, 2).swapaxes(1, 2)[:, None, :]
-    Xt = [np.eye(n)] * t
+
+    if features:
+        if baci:
+            with open(os.path.join(os.getcwd(), "Data", "X_input_baci.pkl"), "rb") as file:
+                feat = pkl.load(file)
+        else:
+            with open(os.path.join(os.getcwd(), "Data", "X_input_not_baci.pkl"), "rb") as file:
+                feat = pkl.load(file)
+
+        feat = np.log(feat[:t, :n, :3])
+        feat = np.where(np.isinf(feat) | np.isnan(feat), 0.0, feat)
+        feat = feat / np.max(feat, 0)
+    if block:
+        Xt = [np.eye(n*r)] * t
+    else:
+        Xt = [np.eye(n)] * t
     x = np.asarray(Xt, dtype=np.float32)
+    if features:
+        x = np.concatenate([x, feat], axis=-1)
     x = tf.expand_dims(x, 1)
     loss_hist = []
     if encoder == "gat":
@@ -427,6 +462,9 @@ if __name__ == "__main__":
     train_mask_in = np.random.choice((0, 1), p=(test_split, 1 - test_split), size=(*a_train.shape,))  # TxBxNxN
     train_mask_in = np.asarray(train_mask_in, dtype=np.float32)
     test_mask_in = 1 - train_mask_in
+    '''if baci:
+        test_mask_in = test_mask_in * diag
+        train_mask_in = train_mask_in * diag'''
     train_mask_out = tf.transpose([train_mask_in] * 3, perm=(1, 2, 3, 4, 0))
     test_mask_out = 1 - train_mask_out
     for e in epochs:
@@ -443,11 +481,16 @@ if __name__ == "__main__":
                 else:
                     x_train_t = x[t]
                     a_train_t = a_train[t] * train_mask_in[t]
-                logits, h_prime_p, h_prime_mu, h_prime_sigma = rnn_cell([x_train_t, a_train_t * train_mask_in[t]],
+                if not sparse:
+                    a_train_masked = a_train_t * train_mask_in[t]
+                    a_test_masked = a_train[t] * test_mask_in[t]
+                else:
+                    a_train_masked, a_test_masked, _ = mask_sparse(a_train_t)
+                    #a_test_masked = mask_sparse(a_tra)
+                logits, h_prime_p, h_prime_mu, h_prime_sigma = rnn_cell([x_train_t, a_train_masked],
                                                                         states=states, training=True)
                 logits_test, h_prime_p_test, h_prime_mu_test, h_prime_sigma_test = rnn_cell(
-                    [x[t], a_train[t] * test_mask_in[t]], states=states_test, training=True)
-                #logits_test = logits
+                    [x[t], a_test_masked], states=states_test, training=True)
                 states = [h_prime_p, h_prime_mu, h_prime_sigma]
                 states_test = [h_prime_p_test, h_prime_mu_test, h_prime_sigma_test]
                 l_train = zero_inflated_lognormal_loss(labels=tf.expand_dims(a_train[t + 1] * train_mask_in[t + 1], -1),
@@ -457,23 +500,11 @@ if __name__ == "__main__":
                 tot_loss_train = 0.5 * tot_loss_train + 0.5 * l_train
                 tot_loss_test = 0.5 * tot_loss_test + 0.5 * l_test
                 gradients = tape.gradient(tot_loss_train, rnn_cell.trainable_weights)
-                if noise == "uncorrelated":
-                    for g_i, g in enumerate(gradients):
-                        noise_curr = tf.random.normal(tf.shape(g), 0, .01)
-                        if t == 0:
-                            gradients[g_i] = g + noise_curr
-                        else:
-                            gradients[g_i] = g + noise_curr - prev_noise[g_i]
-                        prev_noise[g_i] = noise_curr
-                elif noise == "independent":
-                    for g_i, g in enumerate(gradients):
-                        gradients[g_i] = g + tf.random.normal(tf.shape(g), 0, 0.01)
                 optimizer.apply_gradients(zip(gradients, rnn_cell.trainable_weights))
                 if not t % 6:
                     tape.reset()
         loss_hist.append((tot_loss_train, tot_loss_test))
-        # print(f"Epoch {e} Loss:{tot_loss.numpy()}")
-
+    print(logits.shape)
     a_t = zero_inflated_lognormal(logits).sample(1)
     if sparse:
         x_mu = h_prime_mu
@@ -678,7 +709,7 @@ if __name__ == "__main__":
             x_train_t = x[t]
             a_train_t = a_train[t] * train_mask_in[t]
         logits, h_prime_p, h_prime_mu, h_prime_sigma = rnn_cell([x_train_t, a_train_t], states=states,
-                                                                time=times_embedding[t], training=False)
+                                                                training=False)
         states = [h_prime_p, h_prime_mu, h_prime_sigma]
         sample = tf.squeeze(zero_inflated_lognormal(logits).sample(1)).numpy()
         t_samples.append(sample)
@@ -691,7 +722,10 @@ if __name__ == "__main__":
     def update(i):
         ax[0].clear()
         ax[1].clear()
-        fig.suptitle(f"Year {1964 + i}")
+        if baci:
+            fig.suptitle(f"Year {1994 + i}")
+        else:
+            fig.suptitle(f"Year {1964 + i}")
         ax[0].set_title("Pred")
         t = ax[0].imshow(t_samples[i], animated=True)
         ax[1].set_title("True")
@@ -709,7 +743,10 @@ if __name__ == "__main__":
 
     def update1(i):
         ax1.clear()
-        fig1.suptitle(f"Year {1964 + i}")
+        if baci:
+            fig1.suptitle(f"Year {1994 + i}")
+        else:
+            fig1.suptitle(f"Year {1964 + i}")
         a_pred = t_samples[i].flatten()
         a_true = a[i].flatten()
         ax1.hist(a_true, bins=60, alpha=0.5, range=range_axis, color="blue", density=True, label="True")
@@ -741,6 +778,12 @@ if __name__ == "__main__":
         anim3.save(os.path.join(figures_dir, "temporal_inDegree_distr.gif"), writer="pillow")
         plt.close(fig3)'''
 
+    '''centralities = []
+    in_degrees = []
+    out_degrees = []
+    closeness = []
+    for a_t, a_p in zip(np.squeeze()):
+    '''
     if save:
         with open(os.path.join(figures_dir, "settings.txt"), "w") as file:
             settings = f"encoder_type: {encoder} \n" \
@@ -748,6 +791,7 @@ if __name__ == "__main__":
                        f"pred_years: from {1964 + a.shape[0] - pred_years} to {1964 + a.shape[0]} \n" \
                        f"dropout_rate: {drop_rate} \n" \
                        f"sparse: {sparse} \n" \
-                       f"baci:{baci}"
+                       f"baci:{baci}" \
+                       f"features: {features}"
             file.write(settings)
     plt.show()
