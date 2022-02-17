@@ -1,0 +1,6 @@
+encoder_type: grugat 
+training_years: from 1964 to 2014 
+pred_years: from 2014 to 2020 
+dropout_rate: 0.2 
+sparse: False 
+baci:Falsefeatures: False
