@@ -3,9 +3,6 @@ import tensorflow as tf
 from tensorflow.keras import layers as l
 from tensorflow.keras import models as m
 from tensorflow.keras.losses import categorical_crossentropy
-from tensorflow.keras import activations
-from tensorflow.keras import initializers
-import tensorflow.keras.backend as k
 from src.modules import layers
 import tensorflow_probability as tfp
 from src.modules import losses
@@ -15,7 +12,580 @@ from src.modules.utils import (
     predict_all_sparse,
     add_self_loop,
 )
-from spektral.layers import GATConv, DiffPool
+from tensorflow.python.keras.layers.recurrent import DropoutRNNCellMixin, _config_for_enable_caching_device, \
+    _caching_device
+from spektral.layers import GATConv, GCNConv
+from spektral.utils.convolution import gcn_filter
+from src.modules.layers import BatchBilinearDecoderDense, GCNDirected
+from src.modules.losses import TemporalSmoothness
+from tensorflow import keras
+
+
+class NestedCell(DropoutRNNCellMixin, keras.layers.Layer):
+    def __init__(self, nodes, features, channels, attention_heads, hidden_size, dropout, recurrent_dropout, **kwargs):
+        super(NestedCell, self).__init__(**kwargs)
+        self.tot_nodes = nodes
+        self.nodes_features = features
+        self.hidden_size_in = channels * attention_heads
+        self.hidden_size = hidden_size
+        self.attention_heads = attention_heads
+        self.channels = channels
+        self.state_size = [tf.TensorShape((self.tot_nodes, self.hidden_size)),
+                           tf.TensorShape((self.tot_nodes, self.hidden_size)),
+                           tf.TensorShape((self.tot_nodes, self.hidden_size))]
+        self.output_size = [tf.TensorShape((self.tot_nodes, self.tot_nodes, 3))]
+        self.gnn_u = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True, dropout_rate=0)
+        self.decoder_mu = BatchBilinearDecoderDense(activation=None)
+        self.decoder_sigma = BatchBilinearDecoderDense(activation=None)
+        self.decoder_p = BatchBilinearDecoderDense(activation=None)
+        self.dropout = dropout
+        self.recurrent_dropout = recurrent_dropout
+        self._enable_caching_device = kwargs.pop('enable_caching_device', True)
+
+    def build(self, input_shapes):
+        default_caching_device = _caching_device(self)
+        self.b_u_p = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_u_p",
+                                     caching_device=default_caching_device)
+        self.b_r_p = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_r_p",
+                                     caching_device=default_caching_device)
+        self.b_c_p = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_c_p",
+                                     caching_device=default_caching_device)
+        self.W_u_p = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                     initializer="glorot_normal", name="W_u_p", caching_device=default_caching_device)
+        self.W_r_p = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                     initializer="glorot_normal", name="W_r_p", caching_device=default_caching_device)
+        self.W_c_p = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                     initializer="glorot_normal", name="W_c_p", caching_device=default_caching_device)
+
+        self.b_u_mu = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_u_mu",
+                                      caching_device=default_caching_device)
+        self.b_r_mu = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_r_mu",
+                                      caching_device=default_caching_device)
+        self.b_c_mu = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_c_mu",
+                                      caching_device=default_caching_device)
+        self.W_u_mu = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                      initializer="glorot_normal", name="W_u_mu", caching_device=default_caching_device)
+        self.W_r_mu = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                      initializer="glorot_normal", name="W_r_mu", caching_device=default_caching_device)
+        self.W_c_mu = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                      initializer="glorot_normal", name="W_c_mu_sigma",
+                                      caching_device=default_caching_device)
+
+        self.b_u_sigma = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_u_sigma",
+                                         caching_device=default_caching_device)
+        self.b_r_sigma = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_r_sigma",
+                                         caching_device=default_caching_device)
+        self.b_c_sigma = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_c_sigma",
+                                         caching_device=default_caching_device)
+        self.W_u_sigma = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                         initializer="glorot_normal", name="W_u_sigma",
+                                         caching_device=default_caching_device)
+        self.W_r_sigma = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                         initializer="glorot_normal", name="W_r_sigma",
+                                         caching_device=default_caching_device)
+        self.W_c_sigma = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                         initializer="glorot_normal", name="W_c_sigma",
+                                         caching_device=default_caching_device)
+
+    def call(self, inputs, states, training):
+        x, a = tf.nest.flatten(inputs)
+        h_p, h_mu, h_sigma = tf.nest.flatten(states)
+        if 0 < self.dropout < 1:
+            inputs_mask = self.get_dropout_mask_for_cell(inputs=a, training=training, count=1)
+            a = a * inputs_mask
+        if 0 < self.recurrent_dropout < 1:
+            h_mask = self.get_recurrent_dropout_mask_for_cell(inputs=states, training=training, count=1)
+            h_p = h_p * h_mask[0]
+            h_mu = h_mu * h_mask[1]
+            h_sigma = h_sigma * h_mask[2]
+        conv_u = self.gnn_u([x, a], training=training)  # B x N x d
+        conv_r = conv_u
+        conv_c = conv_u
+        # Recurrence
+        u_mu = tf.nn.sigmoid(self.b_u_mu + tf.concat([conv_u, h_mu], -1) @ self.W_u_mu)
+        r_mu = tf.nn.sigmoid(self.b_r_mu + tf.concat([conv_r, h_mu], -1) @ self.W_r_mu)
+        c_mu = tf.nn.tanh(self.b_c_mu + tf.concat([conv_c, r_mu * h_mu], -1) @ self.W_c_mu)
+        h_prime_mu = u_mu * h_mu + (1 - u_mu) * c_mu
+
+        u_sigma = tf.nn.sigmoid(self.b_u_sigma + tf.concat([conv_u, h_sigma], -1) @ self.W_u_sigma)
+        r_sigma = tf.nn.sigmoid(self.b_r_sigma + tf.concat([conv_r, h_sigma], -1) @ self.W_r_sigma)
+        c_sigma = tf.nn.tanh(self.b_c_sigma + tf.concat([conv_c, r_sigma * h_sigma], -1) @ self.W_c_sigma)
+        h_prime_sigma = u_sigma * h_sigma + (1 - u_sigma) * c_sigma
+
+        u_p = tf.nn.sigmoid(self.b_u_p + tf.concat([conv_u, h_p], -1) @ self.W_u_p)
+        r_p = tf.nn.sigmoid(self.b_r_p + tf.concat([conv_r, h_p], -1) @ self.W_r_p)
+        c_p = tf.nn.tanh(self.b_c_p + tf.concat([conv_c, r_p * h_p], -1) @ self.W_c_p)
+        h_prime_p = u_p * h_p + (1 - u_p) * c_p
+
+        p = self.decoder_p(h_prime_p)
+        p = tf.expand_dims(p, -1)
+        mu = self.decoder_mu(h_prime_mu)
+        mu = tf.expand_dims(mu, -1)
+        sigma = self.decoder_sigma(h_prime_sigma)
+        sigma = tf.expand_dims(sigma, -1)
+        logits = tf.concat([p, mu, sigma], axis=-1)
+        return logits, (h_prime_p, h_prime_mu, h_prime_sigma)
+
+    def get_config(self):
+        config = {"nodes": self.tot_nodes,
+                  "nodes_features": self.nodes_features,
+                  "hidden_size": self.hidden_size,
+                  "attention_heads": self.attention_heads,
+                  "channels": self.channels,
+                  "dropout": self.dropout,
+                  "recurrent_dropout": self.recurrent_dropout}
+        config.update(_config_for_enable_caching_device(self))
+        base_config = super(NestedCell, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+
+class NestedCell2(keras.layers.Layer):
+    def __init__(self, nodes, features, channels, attention_heads, hidden_size, dropout_rate=0.2, **kwargs):
+        super(NestedCell2, self).__init__(**kwargs)
+        self.tot_nodes = nodes
+        self.nodes_features = features
+        self.hidden_size_in = channels * attention_heads
+        self.hidden_size = hidden_size
+        self.attention_heads = attention_heads
+        self.channels = channels
+        self.state_size = [tf.TensorShape((self.tot_nodes, self.hidden_size))]
+        self.output_size = [tf.TensorShape((self.tot_nodes, self.tot_nodes, 3))]
+        self.gnn = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True)
+        self.decoder_mu = BatchBilinearDecoderDense(activation=None)
+        self.decoder_sigma = BatchBilinearDecoderDense(activation=None)
+        self.decoder_p = BatchBilinearDecoderDense(activation=None)
+        self.drop = l.Dropout(dropout_rate)
+
+    def build(self, input_shapes):
+        self.b_u = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_u_sigma")
+        self.b_r = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_r_sigma")
+        self.b_c = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_c_sigma")
+        self.W_u = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                   initializer="glorot_normal", name="W_u_sigma")
+        self.W_r = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                   initializer="glorot_normal", name="W_r_sigma")
+        self.W_c = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                   initializer="glorot_normal", name="W_c_sigma")
+
+    def call(self, inputs, states, training):
+        h = states[0]
+        conv_u = self.gnn(inputs, training=training)  # B x N x d
+        conv_r = conv_u
+        conv_c = conv_u
+        # Recurrence
+        u = tf.nn.sigmoid(self.b_u + tf.concat([conv_u, h], -1) @ self.W_u)
+        r = tf.nn.sigmoid(self.b_r + tf.concat([conv_r, h], -1) @ self.W_r)
+        c = tf.nn.tanh(self.b_c + tf.concat([conv_c, r * h], -1) @ self.W_c)
+        h_prime = u * h + (1 - u) * c
+        h_prime = self.drop(h_prime, training=training)
+
+        p = self.decoder_p(h_prime)
+        p = tf.expand_dims(p, -1)
+        mu = self.decoder_mu(h_prime)
+        mu = tf.expand_dims(mu, -1)
+        sigma = self.decoder_sigma(h_prime)
+        sigma = tf.expand_dims(sigma, -1)
+        logits = tf.concat([p, mu, sigma], axis=-1)
+        return logits, h_prime
+
+    def get_config(self):
+        return {"hidden": self.hidden_size, "nodes": self.tot_nodes}
+
+
+class NestedCell3(keras.layers.Layer):
+    def __init__(self, nodes, features, channels, attention_heads, hidden_size, dropout_rate=0.2, **kwargs):
+        super(NestedCell3, self).__init__(**kwargs)
+        self.tot_nodes = nodes
+        self.nodes_features = features
+        self.hidden_size_in = channels * attention_heads
+        self.hidden_size = hidden_size
+        self.attention_heads = attention_heads
+        self.channels = channels
+        self.state_size = [tf.TensorShape((self.tot_nodes, self.hidden_size))]
+        self.output_size = [tf.TensorShape((self.tot_nodes, self.tot_nodes))]
+        self.gnn = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True)
+        self.decoder_mu = BatchBilinearDecoderDense(activation=None)
+        self.decoder_sigma = BatchBilinearDecoderDense(activation=None)
+        self.decoder_p = BatchBilinearDecoderDense(activation=None)
+        self.drop = l.Dropout(dropout_rate)
+
+    def build(self, input_shapes):
+        self.b_u = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_u")
+        self.b_r = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_r")
+        self.b_c = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_c")
+        self.W_u = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                   initializer="glorot_normal", name="W_u")
+        self.W_r = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                   initializer="glorot_normal", name="W_r")
+        self.W_c = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
+                                   initializer="glorot_normal", name="W_c")
+
+    def call(self, inputs, states, training):
+        h = states[0]
+        conv_u = self.gnn(inputs, training=training)  # B x N x d
+        # Recurrence
+        u = tf.nn.sigmoid(self.b_u + tf.concat([conv_u, h], -1) @ self.W_u)
+        print(u.shape)
+        r = tf.nn.sigmoid(self.b_r + tf.concat([conv_u, h], -1) @ self.W_r)
+        c = tf.nn.tanh(self.b_c + tf.concat([conv_u, r * h], -1) @ self.W_c)
+        h_prime = u * h + (1 - u) * c
+        # h_prime = self.drop(h_prime, training=training)
+        A = self.decoder_p(h_prime)
+        return A, h_prime
+
+    def get_config(self):
+        return {"hidden": self.hidden_size, "nodes": self.tot_nodes}
+
+
+class GRUGAT(l.Layer):
+    def __init__(self, hidden_size=10, attn_heads=10, dropout=0.2, hidden_activation="relu", rc_gat=False,
+                 temporal_smoothness=""):
+        super(GRUGAT, self).__init__()
+        self.gnn_u = GATConv(channels=hidden_size // 2, attn_heads=attn_heads, concat_heads=True,
+                             activation=hidden_activation, dropout_rate=dropout, kernel_regularizer="l2")
+        self.rc_gat = rc_gat
+        if self.rc_gat:
+            self.gnn_r = GATConv(channels=hidden_size // 2, attn_heads=attn_heads, concat_heads=True,
+                                 activation=hidden_activation, dropout_rate=dropout, kernel_regularizer="l2")
+            self.gnn_c = GATConv(channels=hidden_size // 2, attn_heads=attn_heads, concat_heads=True,
+                                 activation=hidden_activation, dropout_rate=dropout, kernel_regularizer="l2")
+
+        self.hidden_activation = hidden_activation
+        self.hidden_size = (hidden_size // 2) * attn_heads
+        self.drop = l.Dropout(dropout)
+        self.state_size = self.hidden_size
+        self.output_size = self.hidden_size
+        self.temporal_smoothness = temporal_smoothness
+        if self.temporal_smoothness:
+            self.tmp_smooth = TemporalSmoothness(0.5, self.temporal_smoothness)
+
+    def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
+        x, a = inputs
+        return tf.zeros(shape=(*x.shape[:-1], self.hidden_size))
+
+    def build(self, input_shape):
+        self.b_u = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal", name="b_u")
+        self.b_r = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal", name="b_r")
+        self.b_c = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal", name="b_c")
+        self.W_u = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal",
+                                   name="W_u")
+        self.W_r = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal",
+                                   name="W_r")
+        self.W_c = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal",
+                                   name="W_c")
+
+    def call(self, inputs, state, training, *args, **kwargs):
+        x, a = inputs
+        # Encoding
+        if state is None:
+            h = self.get_initial_state(inputs)
+        else:
+            h = state
+
+        conv_u = self.gnn_u(inputs, training=training)  # B x N x d
+        if self.rc_gat:
+            conv_r = self.gnn_r(inputs, training=training)  # B x N x d
+            conv_c = self.gnn_c(inputs, training=training)  # B x N x d
+        else:
+            conv_r = conv_u
+            conv_c = conv_u
+        # Recurrence
+        u = tf.nn.sigmoid(self.b_u + tf.concat([conv_u, h], -1) @ self.W_u)
+        r = tf.nn.sigmoid(self.b_r + tf.concat([conv_r, h], -1) @ self.W_r)
+        c = tf.nn.tanh(self.b_c + tf.concat([conv_c, r * h], -1) @ self.W_c)
+        h_prime = u * h + (1 - u) * c
+        h_prime = self.drop(h_prime, training=training)
+        return h_prime
+
+
+class RNNGAT(l.Layer):
+    def __init__(self, hidden_size=10, attn_heads=10, dropout=0.2, hidden_activation="relu", rc_gat=False):
+        super(RNNGAT, self).__init__()
+        self.gnn = GATConv(channels=hidden_size // 2, attn_heads=attn_heads, concat_heads=True,
+                           activation=hidden_activation, dropout_rate=dropout, kernel_regularizer="l2")
+
+        self.hidden_activation = hidden_activation
+        self.hidden_size = (hidden_size // 2) * attn_heads
+        self.drop = l.Dropout(dropout)
+        # self.state_size = self.hidden_size
+        self.state_size = self.hidden_size
+        self.output_size = self.hidden_size
+
+    def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
+        x, a = inputs
+        return tf.zeros(shape=(*x.shape[:-1], self.hidden_size))
+
+    def build(self, input_shape):
+        self.b = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal", name="b_u")
+        self.W_h = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal",
+                                   name="W_h")
+
+    def call(self, inputs, state, training, *args, **kwargs):
+        x, a = inputs
+        # Encoding
+        if state is None:
+            h = self.get_initial_state(inputs)
+        else:
+            h = state
+
+        conv_u = self.gnn(inputs, training=training)  # B x N x d
+        # Recurrence
+        h = tf.nn.sigmoid(self.b + tf.concat([conv_u, h], -1) @ self.W_h)
+        h_prime = self.drop(h, training=training)
+        return h_prime
+
+
+class GRUGCN(l.Layer):
+    def __init__(self, hidden_size=10, dropout=0.2, hidden_activation="relu", temporal_smoothness=""):
+        super(GRUGCN, self).__init__()
+        self.gnn_u = GCNConv(channels=hidden_size, concat_heads=True,
+                             activation=hidden_activation, dropout_rate=dropout)
+        self.gnn_r = GCNConv(channels=hidden_size, concat_heads=True,
+                             activation=hidden_activation, dropout_rate=dropout)
+        self.gnn_c = GCNConv(channels=hidden_size, concat_heads=True,
+                             activation=hidden_activation, dropout_rate=dropout)
+
+        self.hidden_activation = hidden_activation
+        self.hidden_size = hidden_size
+        self.drop = l.Dropout(dropout)
+        self.state_size = self.hidden_size
+        self.temporal_smoothness = temporal_smoothness
+        if self.temporal_smoothness:
+            self.tmp_smooth = TemporalSmoothness(0.5, self.temporal_smoothness)
+
+    def get_initial_state(self, inputs):
+        x, a = inputs
+        self.state_size = (*x.shape[:-1], self.hidden_size)
+        return tf.zeros(shape=(*self.state_size,))
+
+    def build(self, input_shape):
+        self.b_u = self.add_weight(name="b_u", shape=(self.hidden_size,), initializer="glorot_normal")
+        self.b_r = self.add_weight(name="b_r", shape=(self.hidden_size,), initializer="glorot_normal")
+        self.b_c = self.add_weight(name="b_c", shape=(self.hidden_size,), initializer="glorot_normal")
+        self.W_u = self.add_weight(name="W_u", shape=(self.hidden_size * 2, self.hidden_size),
+                                   initializer="glorot_normal")
+        self.W_r = self.add_weight(name="W_r", shape=(self.hidden_size * 2, self.hidden_size),
+                                   initializer="glorot_normal")
+        self.W_c = self.add_weight(name="W_c", shape=(self.hidden_size * 2, self.hidden_size),
+                                   initializer="glorot_normal")
+
+    def call(self, inputs, states, training, *args, **kwargs):
+        x, a = inputs
+        if states is None:
+            h = self.get_initial_state(inputs)
+        else:
+            h = states
+
+        # Encoding
+        a = gcn_filter(a.numpy(), symmetric=False)
+        inputs = [a, inputs[1]]
+        conv_u = self.gnn_u(inputs, training=training)
+        conv_r = self.gnn_r(inputs, training=training)
+        conv_c = self.gnn_c(inputs, training=training)
+
+        # Recurrence
+        u = tf.nn.sigmoid(self.b_u + tf.concat([conv_u, h], -1) @ self.W_u)
+        r = tf.nn.sigmoid(self.b_r + tf.concat([conv_r, h], -1) @ self.W_r)
+        c = tf.nn.tanh(self.b_c + tf.concat([conv_c, r * h], -1) @ self.W_c)
+        h_prime = u * h + (1 - u) * c
+        h_prime = self.drop(h_prime, training=training)
+        if self.temporal_smoothness:
+            states_transition = tf.concat([states, h_prime], axis=-1)
+            self.add_loss(self.tmp_smooth(states_transition))
+        return h_prime
+
+
+class GRUGCNDirected(l.Layer):
+    def __init__(self, hidden_size=10, dropout=0.2, hidden_activation="relu"):
+        super(GRUGCNDirected, self).__init__()
+        self.gnn_u = GCNDirected(hidden_size=hidden_size, activation=hidden_activation, dropout_rate=dropout)
+        self.gnn_r = GCNDirected(hidden_size=hidden_size, activation=hidden_activation, dropout_rate=dropout)
+        self.gnn_c = GCNDirected(hidden_size=hidden_size, activation=hidden_activation, dropout_rate=dropout)
+
+        self.hidden_activation = hidden_activation
+        self.hidden_size = hidden_size
+        self.drop = l.Dropout(dropout)
+        self.state_size = self.hidden_size
+
+    def get_initial_state(self, inputs):
+        x, a = inputs
+        self.state_size = (*x.shape[:-1], self.hidden_size)
+        return tf.zeros(shape=(*self.state_size,))
+
+    def build(self, input_shape):
+        self.b_u = self.add_weight(name="b_u", shape=(self.hidden_size,), initializer="glorot_normal")
+        self.b_r = self.add_weight(name="b_r", shape=(self.hidden_size,), initializer="glorot_normal")
+        self.b_c = self.add_weight(name="b_c", shape=(self.hidden_size,), initializer="glorot_normal")
+        self.W_u = self.add_weight(name="W_u", shape=(self.hidden_size * 2, self.hidden_size),
+                                   initializer="glorot_normal")
+        self.W_r = self.add_weight(name="W_r", shape=(self.hidden_size * 2, self.hidden_size),
+                                   initializer="glorot_normal")
+        self.W_c = self.add_weight(name="W_c", shape=(self.hidden_size * 2, self.hidden_size),
+                                   initializer="glorot_normal")
+
+    def call(self, inputs, states, training, *args, **kwargs):
+        if states is None:
+            h = self.get_initial_state(inputs)
+        else:
+            h = states
+
+        # Encoding
+        conv_u = self.gnn_u(inputs, training=training)
+        conv_r = self.gnn_r(inputs, training=training)
+        conv_c = self.gnn_c(inputs, training=training)
+
+        # Recurrence
+        u = tf.nn.sigmoid(self.b_u + tf.concat([conv_u, h], -1) @ self.W_u)
+        r = tf.nn.sigmoid(self.b_r + tf.concat([conv_r, h], -1) @ self.W_r)
+        c = tf.nn.tanh(self.b_c + tf.concat([conv_c, r * h], -1) @ self.W_c)
+        h_prime = u * h + (1 - u) * c
+        h_prime = self.drop(h_prime, training=training)
+        return h_prime
+
+
+class GRU(l.Layer):
+    def __init__(self, hidden_size=10, dropout=0.2, hidden_activation="relu"):
+        super(GRU, self).__init__()
+        self.enc_u = l.Dense(hidden_size, activation=hidden_activation)
+        self.enc_r = l.Dense(hidden_size, activation=hidden_activation)
+        self.enc_c = l.Dense(hidden_size, activation=hidden_activation)
+        self.hidden_activation = hidden_activation
+        self.drop = l.Dropout(dropout)
+        self.hidden_size = hidden_size
+
+    def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
+        x, a = inputs
+        return tf.zeros(shape=(*x.shape[:-1], self.hidden_size))
+
+    def build(self, input_shape):
+        self.b_u = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal", name="b_u")
+        self.b_r = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal", name="b_r")
+        self.b_c = self.add_weight(shape=(self.hidden_size,), initializer="glorot_normal", name="b_c")
+        self.W_u = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal",
+                                   name="W_u")
+        self.W_r = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal",
+                                   name="W_r")
+        self.W_c = self.add_weight(shape=(self.hidden_size * 2, self.hidden_size), initializer="glorot_normal",
+                                   name="W_c")
+
+    def call(self, inputs, state, training, *args, **kwargs):
+        x, a = inputs
+        # Encoding
+        if state is None:
+            h = self.get_initial_state(inputs)
+        else:
+            h = state
+
+        conv_u = self.enc_u(x, training=training)  # B x N x d
+        conv_r = self.enc_r(x, training=training)  # B x N x d
+        conv_c = self.enc_c(x, training=training)  # B x N x d
+
+        # Recurrence
+        u = tf.nn.sigmoid(self.b_u + tf.concat([conv_u, h], -1) @ self.W_u)
+        r = tf.nn.sigmoid(self.b_r + tf.concat([conv_r, h], -1) @ self.W_r)
+        c = tf.nn.tanh(self.b_c + tf.concat([conv_c, r * h], -1) @ self.W_c)
+        h_prime = u * h + (1 - u) * c
+        h_prime = self.drop(h_prime, training=training)
+        return h_prime
+
+
+class GRUGATLognormal(m.Model):
+    def __init__(self, hidden_size=4, attn_heads=4, dropout=0.2, hidden_activation="relu", temporal_smoothness=""):
+        super(GRUGATLognormal, self).__init__()
+        # Encoders
+        self.GatRnn_p = GRUGAT(hidden_size=hidden_size, attn_heads=attn_heads, dropout=dropout,
+                               hidden_activation=hidden_activation, temporal_smoothness=temporal_smoothness)
+        self.GatRnn_mu = GRUGAT(hidden_size=hidden_size, attn_heads=attn_heads, dropout=dropout,
+                                hidden_activation=hidden_activation, temporal_smoothness=temporal_smoothness)
+        self.GatRnn_sigma = GRUGAT(hidden_size=hidden_size, attn_heads=attn_heads, dropout=dropout,
+                                   hidden_activation=hidden_activation, temporal_smoothness=temporal_smoothness)
+
+        # Decoders
+        self.decoder_mu = BatchBilinearDecoderDense(activation=None, qr=False)
+        self.decoder_sigma = BatchBilinearDecoderDense(activation=None, qr=False)
+        self.decoder_p = BatchBilinearDecoderDense(activation=None, qr=False)
+
+    def call(self, inputs, states, training=None, mask=None):
+        # Encoding
+        h_prime_p = self.GatRnn_p(inputs, states[0])
+        h_prime_mu = self.GatRnn_mu(inputs, states[1])
+        h_prime_sigma = self.GatRnn_sigma(inputs, states[2])
+
+        # Decoding
+        p = self.decoder_p(h_prime_p)
+        p = tf.expand_dims(p, -1)
+        mu = self.decoder_mu(h_prime_mu)
+        mu = tf.expand_dims(mu, -1)
+        sigma = self.decoder_sigma(h_prime_sigma)
+        sigma = tf.expand_dims(sigma, -1)
+        logits = tf.concat([p, mu, sigma], -1)
+        return logits, h_prime_p, h_prime_mu, h_prime_sigma
+
+
+class RNNGATLognormal(m.Model):
+    def __init__(self, hidden_size=4, attn_heads=4, dropout=0.2, hidden_activation="relu"):
+        super(RNNGATLognormal, self).__init__()
+        # Encoders
+        self.GatRnn_p = RNNGAT(hidden_size=hidden_size, attn_heads=attn_heads, dropout=dropout,
+                               hidden_activation=hidden_activation)
+        self.GatRnn_mu = RNNGAT(hidden_size=hidden_size, attn_heads=attn_heads, dropout=dropout,
+                                hidden_activation=hidden_activation)
+        self.GatRnn_sigma = RNNGAT(hidden_size=hidden_size, attn_heads=attn_heads, dropout=dropout,
+                                   hidden_activation=hidden_activation)
+
+        # Decoders
+        self.decoder_mu = BatchBilinearDecoderDense(activation=None, qr=False)
+        self.decoder_sigma = BatchBilinearDecoderDense(activation=None, qr=False)
+        self.decoder_p = BatchBilinearDecoderDense(activation=None, qr=False)
+
+    def call(self, inputs, states, training=None, mask=None):
+        # Encoding
+        h_prime_p = self.GatRnn_p(inputs, states[0])
+        h_prime_mu = self.GatRnn_mu(inputs, states[1])
+        h_prime_sigma = self.GatRnn_sigma(inputs, states[2])
+
+        # Decoding
+        p = self.decoder_p(h_prime_p)
+        p = tf.expand_dims(p, -1)
+        mu = self.decoder_mu(h_prime_mu)
+        mu = tf.expand_dims(mu, -1)
+        sigma = self.decoder_sigma(h_prime_sigma)
+        sigma = tf.expand_dims(sigma, -1)
+        logits = tf.concat([p, mu, sigma], -1)
+        return logits, h_prime_p, h_prime_mu, h_prime_sigma
+
+
+class GRULognormal(m.Model):
+    def __init__(self, hidden_size=15, dropout=0.2, hidden_activation="tanh"):
+        super(GRULognormal, self).__init__()
+        # Encoders
+        self.rnn_p = GRU(hidden_size=hidden_size, dropout=dropout,
+                         hidden_activation=hidden_activation)
+        self.rnn_mu = GRU(hidden_size=hidden_size, dropout=dropout,
+                          hidden_activation=hidden_activation)
+        self.rnn_sigma = GRU(hidden_size=hidden_size, dropout=dropout,
+                             hidden_activation=hidden_activation)
+
+        # Decoders
+        self.decoder_mu = BatchBilinearDecoderDense(activation=None, qr=False)
+        self.decoder_sigma = BatchBilinearDecoderDense(activation=None, qr=False)
+        self.decoder_p = BatchBilinearDecoderDense(activation=None, qr=False)
+
+    def call(self, inputs, states, training=None, mask=None):
+        # Encoding
+        h_prime_p = self.rnn_p(inputs, states[0])
+        h_prime_mu = self.rnn_mu(inputs, states[1])
+        h_prime_sigma = self.rnn_sigma(inputs, states[2])
+
+        # Decoding
+        p = self.decoder_p(h_prime_p)
+        p = tf.expand_dims(p, -1)
+        mu = self.decoder_mu(h_prime_mu)
+        mu = tf.expand_dims(mu, -1)
+        sigma = self.decoder_sigma(h_prime_sigma)
+        sigma = tf.expand_dims(sigma, -1)
+        logits = tf.concat([p, mu, sigma], -1)
+        return logits, h_prime_p, h_prime_mu, h_prime_sigma
 
 
 class NTN(m.Model):
@@ -176,7 +746,7 @@ class GCN_Classifier(m.Model):
 
 class GCNDirectedBIL(m.Model):
     def __init__(
-        self, hidden_dims, sparse_regularize, emb_regularize, skip_connections, **kwargs
+            self, hidden_dims, sparse_regularize, emb_regularize, skip_connections, **kwargs
     ):
         super(GCNDirectedBIL, self).__init__(**kwargs)
         self.hidden_dims = hidden_dims
@@ -215,7 +785,7 @@ class GCNDirectedBIL(m.Model):
 
 class GCNDirectedClassifier(m.Model):
     def __init__(
-        self, hidden_dims, sparse_regularize, emb_regularize, skip_connections, **kwargs
+            self, hidden_dims, sparse_regularize, emb_regularize, skip_connections, **kwargs
     ):
         super(GCNDirectedClassifier, self).__init__(**kwargs)
         self.hidden_dims = hidden_dims
@@ -309,13 +879,13 @@ class GAT_Inner(m.Model):
 
 class MultiHeadGAT_BIL(m.Model):
     def __init__(
-        self,
-        heads,
-        hidden_dim,
-        sparse_rate,
-        embedding_smoothness_rate,
-        return_attention=False,
-        **kwargs,
+            self,
+            heads,
+            hidden_dim,
+            sparse_rate,
+            embedding_smoothness_rate,
+            return_attention=False,
+            **kwargs,
     ):
         super(MultiHeadGAT_BIL, self).__init__(**kwargs)
         self.return_attention = return_attention
@@ -356,7 +926,7 @@ class MultiHeadGAT_BIL(m.Model):
 
 class MultiHeadGAT_Inner(m.Model):
     def __init__(
-        self, heads, hidden_dim, sparse_rate, embedding_smoothness_rate, **kwargs
+            self, heads, hidden_dim, sparse_rate, embedding_smoothness_rate, **kwargs
     ):
         super(MultiHeadGAT_Inner, self).__init__(**kwargs)
         self.heads = heads
@@ -385,7 +955,7 @@ class MultiHeadGAT_Inner(m.Model):
 
 class MultiHeadGAT_Flat(m.Model):
     def __init__(
-        self, heads, hidden_dim, sparse_rate, embedding_smoothness_rate, **kwargs
+            self, heads, hidden_dim, sparse_rate, embedding_smoothness_rate, **kwargs
     ):
         super(MultiHeadGAT_Flat, self).__init__(**kwargs)
         self.heads = heads
@@ -414,7 +984,7 @@ class MultiHeadGAT_Flat(m.Model):
 
 class MultiHeadGAT_Classifier(m.Model):
     def __init__(
-        self, heads, hidden_dim, sparse_rate, embedding_smoothness_rate, **kwargs
+            self, heads, hidden_dim, sparse_rate, embedding_smoothness_rate, **kwargs
     ):
         super(MultiHeadGAT_Classifier, self).__init__(**kwargs)
         self.heads = heads
@@ -474,16 +1044,16 @@ class GAT_Inner_spektral_dense(m.Model):
 
 class GAT_BIL_spektral(m.Model):
     def __init__(
-        self,
-        channels=10,
-        attn_heads=10,
-        concat_heads=False,
-        add_self_loop=False,
-        dropout_rate=0.5,
-        output_activation="relu",
-        use_mask=False,
-        sparsity=0.0,
-        **kwargs,
+            self,
+            channels=10,
+            attn_heads=10,
+            concat_heads=False,
+            add_self_loop=False,
+            dropout_rate=0.5,
+            output_activation="relu",
+            use_mask=False,
+            sparsity=0.0,
+            **kwargs,
     ):
         super(GAT_BIL_spektral, self).__init__()
 
@@ -519,18 +1089,18 @@ class GAT_BIL_spektral(m.Model):
 
 class GAT_BIL_spektral_dense(m.Model):
     def __init__(
-        self,
-        channels=10,
-        attn_heads=10,
-        n_layers=2,
-        concat_heads=True,
-        dropout_rate=0.60,
-        add_self_loop=False,
-        return_attn_coef=False,
-        output_activation="relu",
-        use_mask=False,
-        sparsity=0.0,
-        **kwargs,
+            self,
+            channels=10,
+            attn_heads=10,
+            n_layers=2,
+            concat_heads=True,
+            dropout_rate=0.60,
+            add_self_loop=False,
+            return_attn_coef=False,
+            output_activation="relu",
+            use_mask=False,
+            sparsity=0.0,
+            **kwargs,
     ):
         super(GAT_BIL_spektral_dense, self).__init__()
         self.channles = channels
@@ -703,7 +1273,7 @@ def slice_data(data_sp, t, X, sparse=True, r=None, log=False, simmetrize=False):
     A = tf.sparse.to_dense(A)
     A = tf.squeeze(A, 0)
     if r is not None and isinstance(r, tuple):
-        A = A[r[0] : r[1]]
+        A = A[r[0]: r[1]]
     elif r is not None and isinstance(r, int):
         A = A[r]
     if log:
@@ -746,8 +1316,8 @@ if __name__ == "__main__":
     # X = tf.Variable(np.random.normal(size=(nodes, ft)), dtype=tf.float32)
     if dataset == "comtrade":
         with open(
-            "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
-            "rb",
+                "A:\\Users\\Claudio\\Documents\\PROJECTS\\Master-Thesis\\Data\\complete_data_final_transformed_no_duplicate.pkl",
+                "rb",
         ) as file:
             data_np = pkl.load(file)
         data_sp = tf.sparse.SparseTensor(
@@ -973,13 +1543,13 @@ if __name__ == "__main__":
         plt.imshow(mask)
         plt.colorbar()
         with open(
-            "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/idx_to_countries.pkl",
-            "rb",
+                "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/idx_to_countries.pkl",
+                "rb",
         ) as file:
             idx2country = pkl.load(file)
         with open(
-            "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/iso3_to_name.pkl",
-            "rb",
+                "A:/Users/Claudio/Documents/PROJECTS/Master-Thesis/Data/iso3_to_name.pkl",
+                "rb",
         ) as file:
             iso3_to_name = pkl.load(file)
 
