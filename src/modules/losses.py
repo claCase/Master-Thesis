@@ -88,7 +88,9 @@ def binary_cross_entropy(y_true, p):
 
 def zero_inflated_lognormal_loss(labels: tf.Tensor,
                                  logits: tf.Tensor,
-                                 reduce_axis=(-4, -3, -2, -1)) -> tf.Tensor:
+                                 reduce_axis=(-4, -3, -2, -1),
+                                 weights=[0.5,0.5],
+                                 smooth=0.0) -> tf.Tensor:
     """Computes the zero inflated lognormal loss.
     Usage with tf.keras API:
     ```python
@@ -103,22 +105,26 @@ def zero_inflated_lognormal_loss(labels: tf.Tensor,
     """
     # logits = tf.expand_dims(logits, 0)
     # labels = tf.expand_dims(labels, 0)
+    weights = tf.constant(weights) / tf.reduce_sum(weights)
     labels = tf.convert_to_tensor(labels, dtype=tf.float32)
     positive = tf.cast(labels > 0, tf.float32)
-
     logits = tf.convert_to_tensor(logits, dtype=tf.float32)
     logits.shape.assert_is_compatible_with(
         tf.TensorShape(labels.shape[:-1].as_list() + [3]))
 
     positive_logits = logits[..., :1]
+    positive_logits = tf.nn.sigmoid(positive_logits)
     classification_loss = tf.keras.losses.binary_crossentropy(
-        y_true=positive, y_pred=positive_logits, from_logits=True, axis=reduce_axis)
+        y_true=positive, y_pred=positive_logits, from_logits=False, axis=reduce_axis, label_smoothing=smooth)
+    '''
+    ce_weights = tf.where(positive==0, weights[0], weights[1])
+    classification_loss = tf.expand_dims(classification_loss, axis=-1)
+    classification_loss = classification_loss * ce_weights
+    classification_loss = tf.reduce_mean(classification_loss, axis=reduce_axis)'''
 
     loc = logits[..., 1:2]
     # loc = tf.math.maximum(tf.nn.relu(loc), tf.math.sqrt(K.epsilon()))
-    scale = tf.math.maximum(
-        K.softplus(logits[..., 2:]),
-        tf.math.sqrt(K.epsilon()))
+    scale = tf.math.maximum(K.softplus(logits[..., 2:]),tf.math.sqrt(K.epsilon()))
     safe_labels = positive * labels + (
             1 - positive) * K.ones_like(labels)
     regression_loss = -K.mean(
@@ -127,49 +133,6 @@ def zero_inflated_lognormal_loss(labels: tf.Tensor,
     return 0.5 * classification_loss + 0.5 * regression_loss
 
 
-def zero_inflated_logGamma_loss(labels: tf.Tensor,
-                                logits: tf.Tensor,
-                                reduce_axis=(-4, -3, -2, -1)) -> tf.Tensor:
-    """Computes the zero inflated logGamma loss.
-    Usage with tf.keras API:
-    ```python
-    model = tf.keras.Model(inputs, outputs)
-    model.compile('sgd', loss=zero_inflated_logGamma)
-    ```
-    Arguments:
-    labels: True targets, tensor of shape [batch_size, 1].
-    logits: Logits of output layer, tensor of shape [batch_size, 3].
-    Returns:
-    Zero inflated lognormal loss value.
-    """
-    # logits = tf.expand_dims(logits, 0)
-    # labels = tf.expand_dims(labels, 0)
-    labels = tf.convert_to_tensor(labels, dtype=tf.float32)
-    positive = tf.cast(labels > 0, tf.float32)
-
-    logits = tf.convert_to_tensor(logits, dtype=tf.float32)
-    logits.shape.assert_is_compatible_with(
-        tf.TensorShape(labels.shape[:-1].as_list() + [3]))
-
-    positive_logits = logits[..., :1]
-    classification_loss = tf.keras.losses.binary_crossentropy(
-        y_true=positive, y_pred=positive_logits, from_logits=True, axis=reduce_axis)
-
-    loc = tf.math.maximum(K.softplus(logits[..., 1:2]), tf.math.sqrt(K.epsilon()))
-    # loc = tf.math.maximum(tf.nn.relu(loc), tf.math.sqrt(K.epsilon()))
-    scale = tf.math.maximum(K.softplus(logits[..., 2:]), tf.math.sqrt(K.epsilon()))
-    safe_labels = positive * labels + (1 - positive) * K.ones_like(labels)
-    regression_loss = -K.mean(positive * (LogGamma(loc, scale)).log_prob(safe_labels),
-                              axis=reduce_axis
-                              )
-
-    logprob = (LogGamma(loc, scale)).log_prob(safe_labels)
-    isnan = tf.cast(tf.where(tf.math.is_nan(logprob)), dtype=tf.int32)
-    print(safe_labels[isnan[0].numpy().tolist()])
-    print(scale[isnan[0].numpy().tolist()])
-    print(loc[isnan[0].numpy().tolist()])
-    print(logprob[isnan[0].numpy().tolist()])
-    return 0.5 * classification_loss + 0.5 * regression_loss
 
 
 @tf.function
@@ -290,11 +253,11 @@ class TemporalSmoothness(l.Layer):
         Parameters:
             R: if distance=="rotation" then R is the Rotation Matrix Learnable Parameter of shape Txdxd
         """
-        x, a = input_shape
+        x = input_shape
         if self.distance == "rotation":
             self.R = self.add_weight(name="Rotation_weight", shape=(x[0] - 1, x[-1], x[-1]))
             self.identity = tf.constant(tf.eye(x[-1], x[-1]))
-        self.l = self.add_weight(name="Regularizer_weight", shape=(1,))
+        #self.l = self.add_weight(name="Regularizer_weight", shape=(1,))
 
     def call(self, inputs, *args, **kwargs):
         """
@@ -303,7 +266,7 @@ class TemporalSmoothness(l.Layer):
                latent embedding dimension
             a: Temporal adjacency matrix of shape TxNxN
         """
-        x, a = inputs
+        x = inputs
         xt = x[:-1]  # Xt
         xt_1 = x[1:]  # Xt+1
         if self.distance == "rotation":

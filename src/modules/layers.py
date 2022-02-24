@@ -6,7 +6,6 @@ from tensorflow.keras import layers as l
 from tensorflow.keras import activations
 from tensorflow.keras import initializers
 import tensorflow.keras.backend as k
-from src.modules.utils import make_data
 from tensorflow.keras.losses import mean_squared_error, sparse_categorical_crossentropy
 from scipy.sparse.csgraph import laplacian
 import scipy.sparse.linalg
@@ -156,7 +155,7 @@ class BilinearDecoderDense(l.Layer):
         self.qr = qr
 
     def build(self, input_shape):
-        X_shape, A_shape = input_shape
+        X_shape = input_shape
         if self.diagonal:
             self.R = tf.Variable(
                 initial_value=self.initializer(shape=(X_shape[-1],)), name="R_bilinear"
@@ -169,7 +168,7 @@ class BilinearDecoderDense(l.Layer):
             )
 
     def call(self, inputs, **kwargs):
-        X, A = inputs
+        X = inputs
         if not self.qr:
             x_left = tf.matmul(X, self.R)
             A = tf.matmul(x_left, X, transpose_b=True)
@@ -191,14 +190,14 @@ class BatchBilinearDecoderDense(l.Layer):
     outputs: A of shape batch x N x N
     """
 
-    def __init__(self, activation="relu", qr=True, regularizer="l2"):
+    def __init__(self, activation="relu", qr=False, regularizer="l2"):
         super(BatchBilinearDecoderDense, self).__init__()
         self.activation = activation
         self.regularizer = regularizer
         self.qr = qr
 
     def build(self, input_shape):
-        x, a = input_shape
+        x = input_shape
         self.R = self.add_weight(
             shape=(x[-1], x[-1]),
             initializer="glorot_normal",
@@ -207,7 +206,7 @@ class BatchBilinearDecoderDense(l.Layer):
         )
 
     def call(self, inputs, *args, **kwargs):
-        x, a = inputs
+        x = inputs
         if self.qr:
             Q, W = tf.linalg.qr(x, full_matrices=False)
             W_t = tf.einsum("...jk->...kj", W)
@@ -215,12 +214,12 @@ class BatchBilinearDecoderDense(l.Layer):
             Z = tf.matmul(tf.matmul(W, self.R), W_t)
             A = tf.matmul(tf.matmul(Q, Z), Q_t)
             A = activations.get(self.activation)(A)
-            return tf.matmul(Q, W), A
+            return A
         else:
             x_t = tf.einsum("...jk->...kj", x)
             mat_left = tf.matmul(x, self.R)
             A = activations.get(self.activation)(tf.matmul(mat_left, x_t))
-            return x, A
+            return A
 
 
 class BilinearDecoderSparse(l.Layer):
@@ -294,9 +293,6 @@ class SelfAttention(l.Layer):
                                    initializer=self.initializer)
         self.v_w = self.add_weight(name="value", shape=(self.attn_heads, x[-1], self.channels),
                                    initializer=self.initializer)
-        '''self.temp_masking = tf.transpose(tf.where(tf.constant(
-            [generate_list_lower_triang(a[0], a[-1], self.lags)] * self.attn_heads
-        ) == 0.0, -1e10, 0), perm=(1, 0, 2, 3))'''
         if self.dropout_rate:
             self.drop = l.Dropout(self.dropout_rate)
 
@@ -316,7 +312,7 @@ class SelfAttention(l.Layer):
         query = tf.einsum("ntd,hdo->ntho", x, self.q_w)
         key = tf.einsum("ntd,hdo->ntho", x, self.k_w)
         value = tf.einsum("ntd,hdo->ntho", x, self.v_w)
-        qk = tf.einsum("ntho,nzho->nhtz", query, key)
+        qk = tf.einsum("ntho,nzho->nhtz", query, key)  # NxHxTxT
         qk /= tf.sqrt(tf.cast(self.channels, tf.float32))
         qk += tf.transpose([tf.where(a == 0.0, -1e10, 0.0)] * self.attn_heads, perm=(1, 0, 2, 3))  # NxHxTxT
         soft_qk = tf.nn.softmax(qk, axis=-1)
@@ -657,7 +653,7 @@ class CrossAggregation(l.Layer):
         update_embeddings = tf.math.unsorted_segment_sum(
             attended_embeddings, edgelist[:, 1]
         )"""
-        update_embeddings = tf.sparse.sparse_dense_matmul(attention, X)
+        update_embeddings = tf.sparse.sparse_dense_matmul(attention, X_s)
         return update_embeddings
 
 
@@ -801,9 +797,7 @@ class GCN(l.Layer):
 
     def build(self, input_shape):
         X_shape, A_shape = input_shape
-        self.W1 = tf.Variable(
-            initial_value=self.initializer(shape=(X_shape[-1], self.hidden_dim))
-        )
+        self.W1 = self.add_weight(shape=(X_shape[-1], self.hidden_dim), initializer="glorot_normal", name="w_gcn")
         # self.W2 = tf.Variable(initial_value=self.initializer(shape=(self.hidden_dim, self.output_dim)))
 
     def call(self, inputs, **kwargs):
@@ -834,75 +828,39 @@ class GCNDirected(l.Layer):
     Implementation of Spectral-based Graph Convolutional Network for Directed Graphs
     https://arxiv.org/abs/1907.08990
     """
-
     def __init__(
-            self, hidden_dim, activation="relu", dropout_rate=0.5, layer=0, **kwargs
+            self, hidden_size, activation="relu", dropout_rate=0.5, layer=0, **kwargs
     ):
         super(GCNDirected, self).__init__(**kwargs)
-        self.hidden_dim = hidden_dim
-        self.initializer = initializers.GlorotNormal()
+        self.hidden_dim = hidden_size
         self.activation = activation
         self.dropout_rate = dropout_rate
         self.layer = layer
+        if self.dropout_rate:
+            self.drop = l.Dropout(self.dropout_rate)
 
     def build(self, input_shape):
         X_shape, A_shape = input_shape
-        self.kernel1 = tf.Variable(
-            initial_value=self.initializer(shape=(X_shape[-1], self.hidden_dim)),
-            name=f"kernel l{self.layer}",
-        )
+        self.kernel1 = self.add_weight(shape=(X_shape[-1], self.hidden_dim), initializer="glorot_normal", name="w_gcn")
 
-    def call(self, inputs, **kwargs):
+    def call(self, inputs, training, **kwargs):
         X, A = inputs
-        """#A = self.add_identity(A)
-        D_out = tf.reduce_sum(A, axis=1)
-        D_out_inv = 1 / D_out
-        D_out_inv_mat = tf.linalg.diag([D_out_inv])[0]
-        D_out_mat = tf.linalg.diag([D_out])[0]
-        D_out_sqrt = tf.math.sqrt(D_out)
-        D_out_sqrt_mat = tf.linalg.diag([D_out_sqrt])[0]
-        D_out_inv_sqrt = 1 / D_out_sqrt
-        D_out_inv_sqrt_mat = tf.linalg.diag([D_out_inv_sqrt])[0]
-        print(f"D_out_inv_mat {D_out_inv_mat}")
-        P = tf.matmul(D_out_inv_mat, A)
-        print(f"P {P}")
-        left_u, left_v = tf.linalg.eig(tf.transpose(P))  # get left eigenvectors by transposing matrix
-        left_u_first = tf.argsort(tf.math.real(left_u), direction="DESCENDING")[0]
-        print(f"Left U {left_u_first}")
-        left_v = tf.math.real(tf.transpose(tf.gather(left_v, left_u_first, axis=1)))
-        print(f"left v {left_v}")
-        left_v_den = tf.reduce_sum(left_v)
-        left_v_norm = left_v / left_v_den
-        print(f"Left V {left_v_norm}")
-        phi = tf.linalg.diag([left_v_norm])[0]
-        phi_sqrt = tf.math.sqrt(left_v_norm)
-        print(f"phi_sqrt {phi_sqrt}")
-        phi_sqrt_inv = tf.math.sqrt(1 / phi_sqrt)
-        phi_sqrt_mat = tf.linalg.diag([phi_sqrt])[0]
-        print(f"phi_sqrt_inv {phi_sqrt_mat}")
-        phi_sqrt_inv_mat = tf.linalg.diag([phi_sqrt_inv])[0]
-        print(f"phi_sqrt_inv {phi_sqrt_inv_mat}")
-        L = 0.5 * (tf.matmul(tf.matmul(phi_sqrt_mat, P), phi_sqrt_inv_mat) +
-                   tf.matmul(tf.matmul(phi_sqrt_mat, tf.transpose(P)), phi_sqrt_inv_mat))
-        L2 = 0.5 * (tf.matmul(tf.matmul(D_out_sqrt_mat, P), D_out_inv_sqrt_mat) +
-                    tf.matmul(tf.matmul(D_out_sqrt_mat, tf.transpose(P)), D_out_inv_sqrt_mat))
-        """
-        # L = tf.constant(L)
-        # L = laplacian(A, use_out_degree=True)
-        G = ntx.from_numpy_matrix(A.numpy(), create_using=ntx.DiGraph)
-        L = directed_laplacian_matrix(G, walk_type="pagerank")
-        L = -L + tf.eye(A.shape[0])
+        if len(A.shape) == 3:
+            A = tf.squeeze(A)
+        A = self.add_identity(A)
+        A_ = ntx.from_numpy_matrix(A.numpy(), create_using=ntx.DiGraph)
+        L = directed_laplacian_matrix(A_, walk_type="pagerank")
+        L = tf.where(tf.math.is_nan(L), 0.0, L)
+        L = -1 * (L - tf.eye(A.shape[0]))
         xt = tf.matmul(X, self.kernel1)
-        # print(f"t {xt}")
         Z = tf.matmul(L, xt)
-        # print(f"Z {Z}")
         act = activations.get(self.activation)(Z)
         if self.dropout_rate:
-            act = l.Dropout(self.dropout_rate)(act)
-        return act, A
+            act = self.drop(act, training=training)
+        return act
 
     def add_identity(self, A):
-        I = tf.eye(*A.shape)
+        I = tf.eye(A.shape[-1])
         return A + I
 
 

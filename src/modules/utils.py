@@ -3,6 +3,10 @@ import numpy as np
 import tensorflow_probability as tfp
 from tensorflow_probability import distributions as tfd
 import tensorflow.keras.backend as K
+from scipy.linalg import block_diag
+import os
+import pickle as pkl
+
 
 @tf.function
 def symmetrize(A, out_degree=False):
@@ -65,14 +69,17 @@ def sample_zero_edges(A, p):
     return tf.sparse.reorder(tf.sparse.add(A, sparse_zero))
 
 
-def mask_sparse(A_sparse, p=0.5):
+def mask_sparse(A_sparse, p=0.1):
     mask = np.random.choice((True, False), p=(p, 1 - p), size=len(A_sparse.values))
     A0_ind = np.asarray(A_sparse.indices)
     A0_values = np.asarray(A_sparse.values)
-    A0_ind = A0_ind[mask]
-    A0_values = A0_values[mask]
-    A0 = tf.sparse.SparseTensor(A0_ind, A0_values, np.max(A0_ind, 0))
-    return A0, mask
+    A_train_ind = A0_ind[mask]
+    A_train_values = A0_values[mask]
+    A_test_ind = A0_ind[False & mask]
+    A_test_values = A0_values[False & mask]
+    A_train = tf.sparse.SparseTensor(A_train_ind, A_train_values, A_sparse.shape)
+    A_test = tf.sparse.SparseTensor(A_test_ind, A_test_values, A_sparse.shape)
+    return A_train, A_test, mask
 
 
 def add_self_loops_data(data_sp: tf.sparse.SparseTensor):
@@ -114,25 +121,6 @@ def add_self_loop(data: tf.sparse.SparseTensor):
     )
     self_sparse = tf.sparse.SparseTensor(edges, values, data.shape)
     return tf.sparse.add(data, self_sparse)
-
-
-def make_data(years, relations, nodes):
-    tmp_adj_list = []
-    for t in range(years):
-        for r in range(relations):
-            for importer in range(nodes):
-                for exporter in range(nodes):
-                    if importer != exporter:
-                        link = np.random.choice((0, 1))
-                        if link:
-                            value = np.random.lognormal(0, 1)
-                            # value = np.cast["float32"](value)
-                            tmp_adj_list.append((t, r, importer, exporter, value))
-    tmp_adj_list = np.asarray(tmp_adj_list, dtype=np.float32)
-    sparse = tf.sparse.SparseTensor(
-        tmp_adj_list[:, :-1], tmp_adj_list[:, -1], (years, relations, nodes, nodes)
-    )
-    return sparse
 
 
 def predict_all_sparse(A_true):
@@ -247,10 +235,8 @@ def zero_inflated_lognormal(logits=None, p=None, mu=None, sigma=None):
     if logits is not None:
         p, mu, sigma = tf.unstack(logits, axis=-1)
         p = tf.nn.sigmoid(p)
-        sigma = tf.math.maximum(
-            K.softplus(sigma),
-            tf.math.sqrt(K.epsilon()))
-    perm_axis = tf.concat((tf.range(len(p.shape))+1, (0,)), axis=0)
+        sigma = compute_sigma(sigma)
+    perm_axis = tf.concat((tf.range(len(p.shape)) + 1, (0,)), axis=0)
     p_mix = tf.transpose([1 - p, p], perm=perm_axis)
     a = tfd.Mixture(
         cat=tfd.Categorical(probs=p_mix),
@@ -259,3 +245,169 @@ def zero_inflated_lognormal(logits=None, p=None, mu=None, sigma=None):
             tfd.LogNormal(loc=mu, scale=sigma),
         ])
     return a
+
+
+def compute_sigma(sigma):
+    return tf.math.maximum(K.softplus(sigma), tf.math.sqrt(K.epsilon()))
+
+
+def pair_wise_distance(X, distance="square", symmetric=True):
+    x1 = tf.tile(X, [X.shape[0], 1])
+    x2 = tf.repeat(X, X.shape[0], axis=0)
+    if distance == "square":
+        sd = tf.math.square(x1 - x2)
+    elif distance == "abs":
+        sd = tf.math.abs(x1 - x2)
+    else:
+        raise ValueError(f"Distance: {distance} not found")
+    sd = tf.reduce_sum(sd, -1)
+    if symmetric:
+        sd = sd * 0.5 + tf.transpose(sd) * 0.5
+    # print(sd)
+    reshape_size = (*X.shape[:-1], X.shape[-2])
+    sdm = tf.reshape(sd, reshape_size)
+    return sdm
+
+
+def entropy(p):
+    H = tf.reduce_sum(p * tf.math.log(p), axis=None)
+    return H
+
+
+def cross_entropy(p, q):
+    CH = tf.reduce_sum(p * tf.math.log(q), axis=None)
+    return CH
+
+
+def discrete_kl(p, q):
+    H = entropy(p)
+    CH = cross_entropy(p, q)
+    return H + CH
+
+
+# TODO
+def graph_similarity(G1, G2, corr=True):
+    G1 = np.asarray(G1 > 0, np.float32)
+    G2 = np.asarray(G2 > 0, np.float32)
+    d1_in = np.sum(G1, -1)
+    d1_out = np.sum(G1, -2)
+    d2_in = np.sum(G2, -1)
+    d2_out = np.sum(G2, -2)
+    sim_in = (G1).dot(G2.T) - (d1_in.T.dot(d2_in)) / G1.shape[-1]
+    sim_out = (G1.T).dot(G2) - (d1_out.T.dot(d2_out)) / G1.shape[-1]
+    if corr:
+        sd1 = np.sqrt(np.sum(G1 - 1, ))
+    return sim_in, sim_out
+
+
+def generate_data_temporal_block_matrix(data, sparse=True):
+    t, r, n = data.shape[0], data.shape[1], data.shape[2]
+    times = []
+    for i in range(t):
+        times.append(block_diag(*data[i]))
+    block = block_diag(*times)
+    diag_inputs = np.ones(t * r * n) * 15
+    diag = np.empty(block.shape)
+    index = 0
+    tot_values = diag.shape[0]
+    for i in range(t):
+        for j in range(r):
+            index += 1
+            diag_upper = np.diagflat(diag_inputs, index * n)[:tot_values, :tot_values]
+            diag_lower = np.diagflat(diag_inputs, -index * n)[:tot_values, :tot_values]
+            diag += diag_upper + diag_lower
+    if sparse:
+        return tf.sparse.from_dense(block), tf.sparse.from_dense(diag)
+    return block, diag
+
+
+def generate_data_relational_block_matrix(data, sparse=True):
+    t, r, n = data.shape[0], data.shape[1], data.shape[2]
+    times = []
+    for i in range(t):
+        block = block_diag(*data[i])
+        times.append(block)
+    times = np.asarray(times)
+    diag_inputs = np.ones(r * n) * 15
+    diag = np.zeros(block.shape)
+    tot_values = diag.shape[0]
+    index = 0
+    for j in range(r):
+        index += 1
+        diag_upper = np.diagflat(diag_inputs, index * n)[:tot_values, :tot_values]
+        diag_lower = np.diagflat(diag_inputs, -index * n)[:tot_values, :tot_values]
+        diag += diag_upper + diag_lower
+    diags = []
+    for _ in range(t):
+        diags.append(diag)
+    diags = np.asarray(diags)
+    if sparse:
+        return tf.sparse.from_dense(times), tf.sparse.from_dense(diags)
+    return times, diags
+
+
+def optimal_point(points, type="roc"):
+    def distance(p):
+        if type == "roc":
+            opt = [0, 1]
+        else:
+            opt = [1, 1]
+        return np.sqrt(np.sum(np.square(p - opt)))
+
+    d = []
+    for p in points:
+        d.append(distance(p))
+    return np.argsort(d)[0]
+
+
+def sample_from_logits(logits, n_samples, sparse_input, numpy=True):
+    a_t = zero_inflated_lognormal(logits).sample(n_samples)
+    a_mean = tf.reduce_mean(a_t, 0)
+    a_sd = tf.math.reduce_variance(a_t, 0)
+    if sparse_input:
+        a_t = tf.squeeze(a_t)
+    else:
+        a_t = tf.squeeze(a_t[0])
+    if numpy:
+        a_t, a_mean, a_sd = a_t.numpy(), a_mean.numpy(), a_sd.numpy()
+    return a_t, a_mean, a_sd
+
+
+def mean_accuracy_score(A_true, A_pred):
+    abs_squared_error = np.sqrt(np.mean(np.abs(A_true - A_pred), axis=(0,1)))
+    abs_squared = np.sqrt(np.mean(np.abs(A_true), axis=(0,1)))
+    return 1 - abs_squared_error/abs_squared
+
+
+def load_dataset(baci=True, r=6, r2=1, model_pred=True):
+    if baci:
+        with open(os.path.join(os.getcwd(), "Data", "baci_sparse_price.pkl"), "rb") as file:
+            t = 24
+            n = 230
+            data = pkl.load(file)
+            data = tf.sparse.reorder(data)
+            data_slice = tf.sparse.slice(data, (0, 0, 0, r), (t, n, n, r2))
+            data_slice = tf.sparse.transpose(data_slice, perm=(0, 3, 1, 2))
+            data_dense = tf.sparse.reduce_sum(data_slice, 1).numpy()
+
+    else:
+        with open(
+                os.path.join(os.getcwd(), "Data", "complete_data_final_transformed_no_duplicate.pkl"),
+                "rb",
+        ) as file:
+            data_np = pkl.load(file)
+        data_sp = tf.sparse.SparseTensor(
+            data_np[:, :4], data_np[:, 4], np.max(data_np, 0)[:4] + 1
+        )
+        data_sp = tf.sparse.reorder(data_sp)
+        t = 57
+        n = 175
+        data_slice = tf.sparse.slice(data_sp, (1, r, 0, 0), (t, r2, n, n))
+        data_dense = tf.sparse.reduce_sum(data_slice, 1).numpy()
+    xt = np.expand_dims([np.eye(n)] * t, 1)
+    if model_pred:
+        data_dense = tf.cast(tf.expand_dims(data_dense, 1), tf.float32).numpy()
+        return data_dense, xt, n, t
+    return data_dense, n, t
+
+

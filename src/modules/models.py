@@ -21,9 +21,61 @@ from src.modules.losses import TemporalSmoothness
 from tensorflow import keras
 
 
-class NestedCell(DropoutRNNCellMixin, keras.layers.Layer):
+class NestedGRUCell(DropoutRNNCellMixin, l.Layer):
+    def __init__(self, nodes, dropout, recurent_dropout, hidden_size_in, hidden_size_out, **kwargs):
+        super(NestedGRUCell, self).__init__(**kwargs)
+        self.tot_nodes = nodes
+        self.hidden_size_in = hidden_size_in
+        self.hidden_size_out = hidden_size_out
+        self.recurrent_dropout = recurent_dropout
+        self.dropout = dropout
+
+    def build(self, input_shape):
+        default_caching_device = _caching_device(self)
+        self.b_u = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_u",
+                                   caching_device=default_caching_device)
+        self.b_r = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_r",
+                                   caching_device=default_caching_device)
+        self.b_c = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_c",
+                                   caching_device=default_caching_device)
+        self.W_u = self.add_weight(shape=(self.hidden_size_out + self.hidden_size_in, self.hidden_size_out),
+                                   initializer="glorot_normal", name="W_u_p", caching_device=default_caching_device)
+        self.W_r = self.add_weight(shape=(self.hidden_size_out + self.hidden_size_in, self.hidden_size_out),
+                                   initializer="glorot_normal", name="W_r_p", caching_device=default_caching_device)
+        self.W_c = self.add_weight(shape=(self.hidden_size_out + self.hidden_size_in, self.hidden_size_out),
+                                   initializer="glorot_normal", name="W_c_p", caching_device=default_caching_device)
+
+    def call(self, inputs, states, training, mask=None, *args, **kwargs):
+        x = inputs
+        h = states
+        if 0 < self.recurrent_dropout < 1:
+            h_mask = self.get_recurrent_dropout_mask_for_cell(inputs=states, training=training, count=1)
+            h = h * h_mask
+        if 0 < self.dropout < 1:
+            x_mask = self.get_dropout_mask_for_cell(inputs=x, training=training, count=1)
+            x = x * x_mask
+        u = tf.nn.sigmoid(self.b_u + tf.concat([x, h], -1) @ self.W_u)
+        r = tf.nn.sigmoid(self.b_r + tf.concat([x, h], -1) @ self.W_r)
+        c = tf.nn.tanh(self.b_c + tf.concat([x, r * h], -1) @ self.W_c)
+        h_prime = u * h + (1 - u) * c
+        return h_prime
+
+    def get_config(self):
+        config = {"nodes": self.tot_nodes,
+                  "nodes_features": self.nodes_features,
+                  "hidden_size_in": self.hidden_size_in,
+                  "hidden_size_out": self.hidden_size_out,
+                  "dropout": self.dropout,
+                  "recurrent_dropout": self.recurrent_dropout
+                  }
+        config.update(_config_for_enable_caching_device(self))
+        base_config = super(NestedGRUCell, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+
+class RecurrentEncoderDecoder(DropoutRNNCellMixin, keras.layers.Layer):
     def __init__(self, nodes, features, channels, attention_heads, hidden_size, dropout, recurrent_dropout, **kwargs):
-        super(NestedCell, self).__init__(**kwargs)
+        super(RecurrentEncoderDecoder, self).__init__(**kwargs)
         self.tot_nodes = nodes
         self.nodes_features = features
         self.hidden_size_in = channels * attention_heads
@@ -35,6 +87,12 @@ class NestedCell(DropoutRNNCellMixin, keras.layers.Layer):
                            tf.TensorShape((self.tot_nodes, self.hidden_size))]
         self.output_size = [tf.TensorShape((self.tot_nodes, self.tot_nodes, 3))]
         self.gnn_u = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True, dropout_rate=0)
+        self.recurrent_p = NestedGRUCell(nodes, dropout, recurrent_dropout, self.hidden_size_in, self.hidden_size,
+                                         name="rec_p")
+        self.recurrent_mu = NestedGRUCell(nodes, dropout, recurrent_dropout, self.hidden_size_in, self.hidden_size,
+                                          name="rec_p")
+        self.recurrent_sigma = NestedGRUCell(nodes, dropout, recurrent_dropout, self.hidden_size_in, self.hidden_size,
+                                             name="rec_p")
         self.decoder_mu = BatchBilinearDecoderDense(activation=None)
         self.decoder_sigma = BatchBilinearDecoderDense(activation=None)
         self.decoder_p = BatchBilinearDecoderDense(activation=None)
@@ -43,49 +101,7 @@ class NestedCell(DropoutRNNCellMixin, keras.layers.Layer):
         self._enable_caching_device = kwargs.pop('enable_caching_device', True)
 
     def build(self, input_shapes):
-        default_caching_device = _caching_device(self)
-        self.b_u_p = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_u_p",
-                                     caching_device=default_caching_device)
-        self.b_r_p = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_r_p",
-                                     caching_device=default_caching_device)
-        self.b_c_p = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_c_p",
-                                     caching_device=default_caching_device)
-        self.W_u_p = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
-                                     initializer="glorot_normal", name="W_u_p", caching_device=default_caching_device)
-        self.W_r_p = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
-                                     initializer="glorot_normal", name="W_r_p", caching_device=default_caching_device)
-        self.W_c_p = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
-                                     initializer="glorot_normal", name="W_c_p", caching_device=default_caching_device)
-
-        self.b_u_mu = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_u_mu",
-                                      caching_device=default_caching_device)
-        self.b_r_mu = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_r_mu",
-                                      caching_device=default_caching_device)
-        self.b_c_mu = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_c_mu",
-                                      caching_device=default_caching_device)
-        self.W_u_mu = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
-                                      initializer="glorot_normal", name="W_u_mu", caching_device=default_caching_device)
-        self.W_r_mu = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
-                                      initializer="glorot_normal", name="W_r_mu", caching_device=default_caching_device)
-        self.W_c_mu = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
-                                      initializer="glorot_normal", name="W_c_mu_sigma",
-                                      caching_device=default_caching_device)
-
-        self.b_u_sigma = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_u_sigma",
-                                         caching_device=default_caching_device)
-        self.b_r_sigma = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_r_sigma",
-                                         caching_device=default_caching_device)
-        self.b_c_sigma = self.add_weight(shape=(self.tot_nodes, 1), initializer="glorot_normal", name="b_c_sigma",
-                                         caching_device=default_caching_device)
-        self.W_u_sigma = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
-                                         initializer="glorot_normal", name="W_u_sigma",
-                                         caching_device=default_caching_device)
-        self.W_r_sigma = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
-                                         initializer="glorot_normal", name="W_r_sigma",
-                                         caching_device=default_caching_device)
-        self.W_c_sigma = self.add_weight(shape=(self.hidden_size + self.hidden_size_in, self.hidden_size),
-                                         initializer="glorot_normal", name="W_c_sigma",
-                                         caching_device=default_caching_device)
+        pass
 
     def call(self, inputs, states, training):
         x, a = tf.nest.flatten(inputs)
@@ -93,29 +109,13 @@ class NestedCell(DropoutRNNCellMixin, keras.layers.Layer):
         if 0 < self.dropout < 1:
             inputs_mask = self.get_dropout_mask_for_cell(inputs=a, training=training, count=1)
             a = a * inputs_mask
-        if 0 < self.recurrent_dropout < 1:
-            h_mask = self.get_recurrent_dropout_mask_for_cell(inputs=states, training=training, count=1)
-            h_p = h_p * h_mask[0]
-            h_mu = h_mu * h_mask[1]
-            h_sigma = h_sigma * h_mask[2]
-        conv_u = self.gnn_u([x, a], training=training)  # B x N x d
-        conv_r = conv_u
-        conv_c = conv_u
+
+        conv = self.gnn_u([x, a], training=training)  # B x N x d
+
         # Recurrence
-        u_mu = tf.nn.sigmoid(self.b_u_mu + tf.concat([conv_u, h_mu], -1) @ self.W_u_mu)
-        r_mu = tf.nn.sigmoid(self.b_r_mu + tf.concat([conv_r, h_mu], -1) @ self.W_r_mu)
-        c_mu = tf.nn.tanh(self.b_c_mu + tf.concat([conv_c, r_mu * h_mu], -1) @ self.W_c_mu)
-        h_prime_mu = u_mu * h_mu + (1 - u_mu) * c_mu
-
-        u_sigma = tf.nn.sigmoid(self.b_u_sigma + tf.concat([conv_u, h_sigma], -1) @ self.W_u_sigma)
-        r_sigma = tf.nn.sigmoid(self.b_r_sigma + tf.concat([conv_r, h_sigma], -1) @ self.W_r_sigma)
-        c_sigma = tf.nn.tanh(self.b_c_sigma + tf.concat([conv_c, r_sigma * h_sigma], -1) @ self.W_c_sigma)
-        h_prime_sigma = u_sigma * h_sigma + (1 - u_sigma) * c_sigma
-
-        u_p = tf.nn.sigmoid(self.b_u_p + tf.concat([conv_u, h_p], -1) @ self.W_u_p)
-        r_p = tf.nn.sigmoid(self.b_r_p + tf.concat([conv_r, h_p], -1) @ self.W_r_p)
-        c_p = tf.nn.tanh(self.b_c_p + tf.concat([conv_c, r_p * h_p], -1) @ self.W_c_p)
-        h_prime_p = u_p * h_p + (1 - u_p) * c_p
+        h_prime_p = self.recurrent_p(conv, h_p)
+        h_prime_mu = self.recurrent_mu(conv, h_sigma)
+        h_prime_sigma = self.recurrent_p(conv, h_sigma)
 
         p = self.decoder_p(h_prime_p)
         p = tf.expand_dims(p, -1)
@@ -135,7 +135,7 @@ class NestedCell(DropoutRNNCellMixin, keras.layers.Layer):
                   "dropout": self.dropout,
                   "recurrent_dropout": self.recurrent_dropout}
         config.update(_config_for_enable_caching_device(self))
-        base_config = super(NestedCell, self).get_config()
+        base_config = super(RecurrentEncoderDecoder, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
 
@@ -225,7 +225,6 @@ class NestedCell3(keras.layers.Layer):
         conv_u = self.gnn(inputs, training=training)  # B x N x d
         # Recurrence
         u = tf.nn.sigmoid(self.b_u + tf.concat([conv_u, h], -1) @ self.W_u)
-        print(u.shape)
         r = tf.nn.sigmoid(self.b_r + tf.concat([conv_u, h], -1) @ self.W_r)
         c = tf.nn.tanh(self.b_c + tf.concat([conv_u, r * h], -1) @ self.W_c)
         h_prime = u * h + (1 - u) * c
