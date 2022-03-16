@@ -482,35 +482,42 @@ def samples_from_model(model=None, data=None, weights_path=None, n_samples=10, n
     return states_history, logits_history, predictions
 
 
-def plot_uncertainty(samples_path, save=True, from_nodes=[80, 81], to_nodes=[2, 3]):
-    with open(os.path.join(samples_path, "predictions.pkl"), "rb") as file:
-        samples = pkl.load(file)
-    with open(os.path.join(samples_path, "logits_history.pkl"), "rb") as file:
-        logits = pkl.load(file)
+def plot_uncertainty(samples_path=None, samples=None, logits=None, baci=True, r=6, save=False, save_path=None,
+                     from_nodes=[80, 82], to_nodes=[2, 4], montecarlo=False):
+    if samples_path is not None:
+        save_path = samples_path
+        with open(os.path.join(samples_path, "predictions.pkl"), "rb") as file:
+            samples = pkl.load(file)
+        with open(os.path.join(samples_path, "logits_history.pkl"), "rb") as file:
+            logits = pkl.load(file)
+        specs = pd.read_csv(os.path.join(samples_path, "model_spec.csv"))
+        r = specs["r"].values[0]
+        baci = specs["baci"].values[0]
+    elif samples is None or logits is None:
+        raise ValueError("Samples path cannot be None when samples or logits are None")
 
-    specs = pd.read_csv(os.path.join(samples_path, "model_spec.csv"))
-    t = specs["t"].values[0]
-    n = specs["n"].values[0]
-    r = specs["r"].values[0]
-    baci = specs["baci"].values[0]
+    if tf.is_tensor(samples) or tf.is_tensor(logits):
+        samples = samples.numpy()
+        logits = logits.numpy()
     a_t, t, n = load_dataset(baci, model_pred=False, r=r)
     a_t = a_t[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]]
     a_t = tf.clip_by_value(tf.math.log(a_t), 0, 1e5).numpy()
 
     # Logits : T x n_drop x 1 x N x N x 3
     lognormal = zero_inflated_lognormal(logits)
-    Mu = logits[..., 1:2].squeeze((2, -1))
-    P = tf.nn.sigmoid(logits[..., :1]).numpy().squeeze((2, -1))
-    V = compute_sigma(logits[..., -1:]).numpy().squeeze((2, -1))
+    logits = tf.squeeze(logits).numpy()
+    Mu = logits[..., 1:2].squeeze()
+    P = tf.nn.sigmoid(logits[..., :1]).numpy().squeeze()
+    V = compute_sigma(logits[..., -1:]).numpy().squeeze()
     mean_Mu = np.mean(Mu, axis=1)
     mean_V = np.mean(V, axis=1)
     mean_P = np.mean(P, axis=1)
 
     # Calculate tot mean and variance of samples by formula
-    # T x n_drop x n_samples x N x N -> T x N x N
-    drop_mean_samples = tf.reduce_mean(lognormal.mean(), axis=(1, 2)).numpy()
+    # T x n_drop x N x N -> T x N x N
+    drop_mean_samples = tf.reduce_mean(lognormal.mean(), axis=1).numpy()
     drop_mean_samples = tf.clip_by_value(tf.math.log(drop_mean_samples), 0, 100).numpy()
-    drop_variance_samples = tf.reduce_mean(lognormal.variance(), axis=(1, 2)).numpy()
+    drop_variance_samples = tf.reduce_mean(lognormal.variance(), axis=1).numpy()
     drop_variance_samples = tf.clip_by_value(tf.math.log(tf.math.sqrt(drop_variance_samples)), 0, 100).numpy()
 
     # Samples :  T x n_drop x n_samples x N x N
@@ -539,7 +546,7 @@ def plot_uncertainty(samples_path, save=True, from_nodes=[80, 81], to_nodes=[2, 
         axs[2].set_title("Probability Parameter")
         axs[2].set_ylim(0, 1)
         if save:
-            plt.savefig(os.path.join(samples_path, "deterministic_parameters.png"))
+            plt.savefig(os.path.join(save_path, "deterministic_parameters.png"))
             plt.close()
     else:
         fig, axs = plt.subplots(3, 1, figsize=(15, 10))
@@ -588,7 +595,7 @@ def plot_uncertainty(samples_path, save=True, from_nodes=[80, 81], to_nodes=[2, 
         axs[1].set_title("Epistemic Uncertainty over the Variance")
         axs[2].set_title("Epistemic Uncertainty over the Probability")
         if save:
-            plt.savefig(os.path.join(samples_path, "epistemic_parameters.png"))
+            plt.savefig(os.path.join(save_path, "epistemic_parameters.png"))
             plt.close()
 
     fig3, axs3 = plt.subplots(1, 1, figsize=(15, 10))
@@ -598,7 +605,6 @@ def plot_uncertainty(samples_path, save=True, from_nodes=[80, 81], to_nodes=[2, 
     a_t_reshaped = a_t.reshape(-1, edges)
     for i in range(edges):
         axs3.plot(tot_mean_reshaped[:, i], label="Predicted Edge Values", color=cmap(i))
-        axs3.plot(a_t_reshaped[:, i], "-", label="True Edge Values", color=cmap(i))
     axs3.set_ylabel("Log of Mean and Standard Deviation")
     axs3.set_xlabel("Years")
     upper_mean = tot_sample_mean_samples + np.sqrt(tot_sample_variance_samples)
@@ -607,30 +613,33 @@ def plot_uncertainty(samples_path, save=True, from_nodes=[80, 81], to_nodes=[2, 
     upper_mean = upper_mean[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
     for i in range(edges):
         axs3.fill_between(years, lower_mean[:, i], upper_mean[:, i], color=cmap(i), alpha=0.5)
-    if save:
-        plt.savefig(os.path.join(samples_path, "sample_aleatoric_uncertainty.png"))
-        plt.close()
-
-    fig2, axs2 = plt.subplots(1, 1, figsize=(15, 10))
-    if samples.shape[1] == 1:
-        fig2.suptitle("Montecarlo Aleatoric Uncertainty")
-    else:
-        fig2.suptitle("Montecarlo Epistemic + Aleatoric Uncertainty")
-    drop_mean_reshaped = drop_mean_samples[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
     for i in range(edges):
-        axs2.plot(drop_mean_reshaped[:, i], color=cmap(i))
-        axs3.plot(a_t_reshaped[:, i], "-", label="True Edge Values", color=cmap(i))
-    axs2.set_ylabel("Log of Mean and Standard Deviation")
-    axs2.set_xlabel("Years")
-    upper_mean = drop_mean_samples + drop_variance_samples
-    lower_mean = drop_mean_samples - drop_variance_samples
-    lower_mean = lower_mean[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
-    upper_mean = upper_mean[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
-    for i in range(edges):
-        axs2.fill_between(years, lower_mean[:, i], upper_mean[:, i], color=cmap(i), alpha=0.5)
+        axs3.plot(a_t_reshaped[:, i], "--", label="True Edge Values", color=cmap(i))
     if save:
-        plt.savefig(os.path.join(samples_path, "aleatoric_uncertainty.png"))
+        plt.savefig(os.path.join(save_path, "sample_aleatoric_uncertainty.png"))
         plt.close()
+    if montecarlo:
+        fig2, axs2 = plt.subplots(1, 1, figsize=(15, 10))
+        if samples.shape[1] == 1:
+            fig2.suptitle("Montecarlo Aleatoric Uncertainty")
+        else:
+            fig2.suptitle("Montecarlo Epistemic + Aleatoric Uncertainty")
+        drop_mean_reshaped = drop_mean_samples[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
+        for i in range(edges):
+            axs2.plot(drop_mean_reshaped[:, i], color=cmap(i))
+        axs2.set_ylabel("Log of Mean and Standard Deviation")
+        axs2.set_xlabel("Years")
+        upper_mean = drop_mean_samples + drop_variance_samples
+        lower_mean = drop_mean_samples - drop_variance_samples
+        lower_mean = lower_mean[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
+        upper_mean = upper_mean[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
+        for i in range(edges):
+            axs2.fill_between(years, lower_mean[:, i], upper_mean[:, i], color=cmap(i), alpha=0.5)
+        for i in range(edges):
+            axs2.plot(a_t_reshaped[:, i], "--", label="True Edge Values", color=cmap(i))
+        if save:
+            plt.savefig(os.path.join(save_path, "aleatoric_uncertainty.png"))
+            plt.close()
 
 
 def plot_centrality(statistics_path, model_samples_path, centralities=["eig_in", "eig_out"],
@@ -667,12 +676,11 @@ def plot_centrality(statistics_path, model_samples_path, centralities=["eig_in",
     centrality_mapping = {"eig_in": "In-Eigenvecor", "eig_out": "Out-Eigenvecor", "in": "In-Degree",
                           "out": "Out-Degree", "clos": "Closeness"}
     for centrality in centralities:
-        print(centrality)
         for i in range(0, t - 1, by):
             A_true = A_true_t[i]
-            A_true = np.log(np.where(A_true==0, 1, A_true))
+            A_true = np.log(np.where(A_true == 0, 1, A_true))
             A_pred = A_pred_t[i]
-            A_pred = np.log(np.where(A_pred==0, 1, A_pred))
+            A_pred = np.log(np.where(A_pred == 0, 1, A_pred))
             eig_in_true = df[(df["time"] == t) & (df["true"] == True)][centrality].values
             eig_out_true = df[(df["time"] == t) & (df["true"] == True)][centrality].values
             eig_in_pred = df[(df["time"] == t) & (df["true"] == False)][centrality].values
@@ -853,7 +861,7 @@ def visualize_jaccard_matrix(stats_path, by=5):
         plt.close()
 
 
-def plot_predictions_graph(predictions_path, save=True, from_pred=[140,144], to_pred=[153, 154]):
+def plot_predictions_graph(predictions_path, save=True, from_pred=[140, 144], to_pred=[153, 154]):
     with open(os.path.join(predictions_path, "predictions.pkl"), "rb") as file:
         predictions = pkl.load(file)
     specs = pd.read_csv(os.path.join(predictions_path, "model_spec.csv"))
@@ -878,6 +886,7 @@ def plot_predictions_graph(predictions_path, save=True, from_pred=[140,144], to_
 def rank_by_centrality(stats_path):
     df = pd.read_csv(os.path.join(stats_path, "stats.csv"))
     df[""]["eig_in"]
+
 
 if __name__ == "__main__":
     os.chdir("../../")

@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import argparse
 from src.modules.utils import compute_sigma
+from src.modules.plotter import plot_uncertainty
+from matplotlib import cm
 
 
 class SimpleRnn(DropoutRNNCellMixin, l.Layer):
@@ -66,6 +68,11 @@ if __name__ == "__main__":
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--logits", action="store_true")
     parser.add_argument("--seq_len", type=int, default=6)
+    parser.add_argument("--features", action="store_true")
+    parser.add_argument("--baci", action="store_true")
+    parser.add_argument("--epistemic", action="store_true")
+    parser.add_argument("--epochs", type=int, default=150)
+    parser.add_argument("--unroll", action="store_true")
     args = parser.parse_args()
     keras = args.k
     gat = args.gat
@@ -73,35 +80,48 @@ if __name__ == "__main__":
     dropout = args.dropout
     logits = args.logits
     seq_len = args.seq_len
+    features = args.features
+    baci = args.baci
+    epistemic = args.epistemic
+    epochs = args.epochs
+    unroll = args.unroll
 
     if gat:
-        a, x, N, t = utils.load_dataset(baci=True)
+        a, x, N, t = utils.load_dataset(baci=baci, features=features)
         f = x.shape[-1]
         a = tf.transpose(a, perm=(1, 0, 2, 3))  # BxTxNxN
-        x = tf.transpose(x, perm=(1, 0, 2, 3))  # # BxTxNxf
-        input_1 = tf.keras.Input((None, N, f))
-        input_2 = tf.keras.Input((None, N, N))
+        x = tf.transpose(x, perm=(1, 0, 2, 3))  # BxTxNxf
+        if unroll:
+            input_1 = tf.keras.Input((a.shape[1] - 1, N, f))
+            input_2 = tf.keras.Input((a.shape[1] - 1, N, N))
+        else:
+            input_1 = tf.keras.Input((None, N, f))
+            input_2 = tf.keras.Input((None, N, N))
         if logits:
             if stateful:
                 batches_a = np.empty(shape=(1, seq_len, N, N))
-                batches_x = np.empty(shape=(1, seq_len, N, N))
-                for i in range(0, t-seq_len, seq_len):
+                batches_x = np.empty(shape=(1, seq_len, N, f))
+                for i in range(0, t - seq_len, seq_len):
                     batches_a = np.concatenate([batches_a, a[:1, i:i + seq_len, :]], axis=0)
                     batches_x = np.concatenate([batches_x, x[:1, i:i + seq_len, :]], axis=0)
-                a = np.concatenate([batches_a, a[:1, t-seq_len:, :]], axis=0)[1:]
-                x = np.concatenate([batches_x, x[:1, t-seq_len:, :]], axis=0)[1:]
-                input_1 = tf.keras.Input((None, N, f), batch_size=a.shape[0])
-                input_2 = tf.keras.Input((None, N, N), batch_size=a.shape[0])
+                a = np.concatenate([batches_a, a[:1, t - seq_len:, :]], axis=0)[1:]
+                x = np.concatenate([batches_x, x[:1, t - seq_len:, :]], axis=0)[1:]
+                if unroll:
+                    input_1 = tf.keras.Input((a.shape[1] - 1, N, f), batch_size=a.shape[0])
+                    input_2 = tf.keras.Input((a.shape[1] - 1, N, N), batch_size=a.shape[0])
+                else:
+                    input_1 = tf.keras.Input((None, N, f), batch_size=a.shape[0])
+                    input_2 = tf.keras.Input((None, N, N), batch_size=a.shape[0])
 
             cell = models.RecurrentEncoderDecoder(nodes=N,
                                                   features=f,
-                                                  channels=5,
-                                                  attention_heads=8,
-                                                  hidden_size=25,
+                                                  channels=3,
+                                                  attention_heads=10,
+                                                  hidden_size=30,
                                                   dropout=dropout,
                                                   recurrent_dropout=dropout)
-            rnn = tf.keras.layers.RNN(cell, return_sequences=True, return_state=False, stateful=stateful)
-            outputs = rnn((input_1, input_2))
+            rnn = tf.keras.layers.RNN(cell, return_sequences=True, return_state=False, stateful=stateful, unroll=unroll)
+            outputs = rnn((input_1, input_2), training=True)
             model = tf.keras.models.Model([input_1, input_2], outputs)
             model.compile(optimizer="rmsprop",
                           loss=lambda true, logits:
@@ -112,17 +132,64 @@ if __name__ == "__main__":
                                                                   ),
                               axis=1)
                           )
-            history = model.fit(x=[x[:, :-1, :], a[:, :-1, :]], y=a[:, 1:, :], epochs=150, verbose=1)
-            o = model([x, a])
-            o = tf.reshape(o, (-1, N, N, 3))
+            history = model.fit(x=[x[:, :-1, :], a[:, :-1, :]], y=a[:, 1:, :], epochs=epochs, verbose=1)
             history = history.history["loss"]
             plt.plot(history)
-            ln = utils.zero_inflated_lognormal(o)
-            samples = ln.sample(1)
+            if unroll:
+                a = a[:, :-1, :]
+                x = x[:, :-1, :]
+            if epistemic:
+                logits = []
+                samples = []
+                for i in range(15):
+                    logit = model.predict([x, a])
+                    logit = tf.squeeze(logit)
+                    if stateful:
+                        logit = tf.reshape(logit, shape=(-1, *logit.shape[-3:]))
+                    ln = utils.zero_inflated_lognormal(logit)
+                    sample = ln.sample(10).numpy().squeeze()
+                    logits.append(logit)
+                    samples.append(sample)
+                epistemic_samples = np.asarray(samples)
+                epistemic_samples = np.transpose(epistemic_samples, axes=(2, 0, 1, 3, 4))
+                logits = np.swapaxes(logits, 0, 1)
+                plot_uncertainty(samples=epistemic_samples,
+                                 logits=logits,
+                                 baci=baci,
+                                 from_nodes=[126, 127],
+                                 to_nodes=[151, 153])
+                plot_uncertainty(samples=epistemic_samples,
+                                 logits=logits,
+                                 baci=baci,
+                                 from_nodes=[151, 153],
+                                 to_nodes=[126, 127])
+                logits = tf.reduce_mean(logits, axis=1)
+                #samples = utils.zero_inflated_lognormal(logits).sample(1).numpy()
+                samples = np.mean(epistemic_samples, (1, 2))
+                # samples = utils.zero_inflated_lognormal(tf.reduce_mean(logits, axis=1)).sample(10).numpy().mean(0)
+            else:
+                logits = model([x, a])
+                logits = tf.reshape(logits, (-1, N, N, 3))
+                ln = utils.zero_inflated_lognormal(logits)
+                samples = ln.sample(10)
+                samples = tf.reduce_mean(samples, axis=0)
             samples = tf.squeeze(samples)
             samples = tf.clip_by_value(tf.math.log(samples), 0, 1e10)
             a = tf.reshape(a, (-1, N, N))
             a = tf.clip_by_value(tf.math.log(a), 0, 1e10)
+
+            fig_samples, ax_samples = plt.subplots(2, 1)
+            samples_plot = samples.numpy()[:, 151:153, 126:127].reshape(-1, 3)
+            a_plot = a.numpy()[:, 151:153, 126:127].reshape(-1, 3)
+            samples_plot2 = samples.numpy()[:, 126:127, 151:153].reshape(-1, 3)
+            a_plot2 = a.numpy()[:, 126:127, 151:153].reshape(-1, 3)
+            cmap = cm.get_cmap("Set1")
+            for i in range(3):
+                ax_samples[0].plot(np.arange(a_plot.shape[0]), a_plot[:, i], "--", color=cmap(i))
+                ax_samples[0].plot(np.arange(samples_plot.shape[0]), samples_plot[:, i], color=cmap(i))
+                ax_samples[1].plot(np.arange(a_plot.shape[0]), a_plot2[:, i], "--", color=cmap(i))
+                ax_samples[1].plot(np.arange(samples_plot.shape[0]), samples_plot2[:, i], color=cmap(i))
+            plt.show()
 
             fig_logits, ax_logits = plt.subplots(1, 3)
 
@@ -132,15 +199,15 @@ if __name__ == "__main__":
                 ax_logits[0].cla()
                 ax_logits[1].cla()
                 ax_logits[2].cla()
-                ax_logits[0].imshow(tf.nn.sigmoid(o[i, :, :, 0]).numpy())
-                ax_logits[1].imshow(o[i, :, :, 1].numpy())
-                ax_logits[2].imshow(compute_sigma(o[i, :, :, 2]).numpy())
+                ax_logits[0].imshow(tf.nn.sigmoid(logits[i, :, :, 0]).numpy())
+                ax_logits[1].imshow(logits[i, :, :, 1].numpy())
+                ax_logits[2].imshow(compute_sigma(logits[i, :, :, 2]).numpy())
                 ax_logits[0].set_title("P")
                 ax_logits[1].set_title("Mu")
                 ax_logits[2].set_title("Sigma")
 
 
-            anim_p = animation.FuncAnimation(fig_logits, update_p, o.shape[0] - 2, repeat=True)
+            anim_p = animation.FuncAnimation(fig_logits, update_p, logits.shape[0] - 1, repeat=True)
 
             fig, axs = plt.subplots(1, 2)
             axs[0].set_title("Pred")
@@ -178,19 +245,21 @@ if __name__ == "__main__":
                               )
                           )
                           )
-            history = model.fit(x=[x[:, :-1, :],a[:, :-1, :]], y=a[:, 1:, :], epochs=250, verbose=1)
+            history = model.fit(x=[x[:, :-15, :], a[:, :-15, :]], y=a[:, 1:-14, :], epochs=150, verbose=1)
             history = history.history["loss"]
-            samples = tf.squeeze(model([x,a])).numpy()
-            fig, axs = plt.subplots(1,2)
+            samples = tf.squeeze(model([x, a])).numpy()
+            fig, axs = plt.subplots(1, 2)
+
+
             def update(i):
                 fig.suptitle(f"Time {i}")
                 axs[0].cla()
                 axs[1].cla()
                 axs[0].imshow(samples[i])
-                axs[1].imshow(a[i])
+                axs[1].imshow(a[i + 1])
 
 
-            anim = animation.FuncAnimation(fig, update, samples.shape[0] - 2, repeat=True)
+            anim = animation.FuncAnimation(fig, update, samples.shape[0] - 1, repeat=True)
             plt.show()
     else:
         if stateful:
