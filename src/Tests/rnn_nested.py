@@ -85,7 +85,8 @@ if __name__ == "__main__":
     epistemic = args.epistemic
     epochs = args.epochs
     unroll = args.unroll
-
+    from_nodes = [94, 96]
+    to_nodes = [100, 102]
     if gat:
         a, x, N, t = utils.load_dataset(baci=baci, features=features)
         f = x.shape[-1]
@@ -115,11 +116,13 @@ if __name__ == "__main__":
 
             cell = models.RecurrentEncoderDecoder(nodes=N,
                                                   features=f,
-                                                  channels=3,
-                                                  attention_heads=10,
-                                                  hidden_size=30,
+                                                  channels=5,
+                                                  attention_heads=5,
+                                                  hidden_size=10,
+                                                  dropout_adj=0,
                                                   dropout=dropout,
-                                                  recurrent_dropout=dropout)
+                                                  recurrent_dropout=dropout,
+                                                  symmetric=False)
             rnn = tf.keras.layers.RNN(cell, return_sequences=True, return_state=False, stateful=stateful, unroll=unroll)
             outputs = rnn((input_1, input_2), training=True)
             model = tf.keras.models.Model([input_1, input_2], outputs)
@@ -156,39 +159,34 @@ if __name__ == "__main__":
                 plot_uncertainty(samples=epistemic_samples,
                                  logits=logits,
                                  baci=baci,
-                                 from_nodes=[126, 127],
-                                 to_nodes=[151, 153])
+                                 from_nodes=from_nodes,
+                                 to_nodes=to_nodes)
                 plot_uncertainty(samples=epistemic_samples,
                                  logits=logits,
                                  baci=baci,
-                                 from_nodes=[151, 153],
-                                 to_nodes=[126, 127])
+                                 from_nodes=from_nodes,
+                                 to_nodes=to_nodes,
+                                 inverse=True)
                 logits = tf.reduce_mean(logits, axis=1)
-                #samples = utils.zero_inflated_lognormal(logits).sample(1).numpy()
-                samples = np.mean(epistemic_samples, (1, 2))
-                # samples = utils.zero_inflated_lognormal(tf.reduce_mean(logits, axis=1)).sample(10).numpy().mean(0)
             else:
                 logits = model([x, a])
                 logits = tf.reshape(logits, (-1, N, N, 3))
                 ln = utils.zero_inflated_lognormal(logits)
-                samples = ln.sample(10)
-                samples = tf.reduce_mean(samples, axis=0)
-            samples = tf.squeeze(samples)
-            samples = tf.clip_by_value(tf.math.log(samples), 0, 1e10)
+                samples = ln.sample(20)
+                epistemic_samples = tf.expand_dims(tf.transpose(samples, perm=(1, 0, 2, 3)), 1)
+                samples = tf.reduce_mean(samples, axis=0).numpy()
+                logits_plot = tf.expand_dims(logits, 1)
+
+                plot_uncertainty(samples=epistemic_samples,
+                                 logits=logits_plot,
+                                 baci=baci,
+                                 from_nodes=to_nodes,
+                                 to_nodes=from_nodes)
+
+            samples = tf.clip_by_value(tf.math.log(epistemic_samples), 0, 1e10)
+            samples = np.mean(samples, (1, 2))
             a = tf.reshape(a, (-1, N, N))
             a = tf.clip_by_value(tf.math.log(a), 0, 1e10)
-
-            fig_samples, ax_samples = plt.subplots(2, 1)
-            samples_plot = samples.numpy()[:, 151:153, 126:127].reshape(-1, 3)
-            a_plot = a.numpy()[:, 151:153, 126:127].reshape(-1, 3)
-            samples_plot2 = samples.numpy()[:, 126:127, 151:153].reshape(-1, 3)
-            a_plot2 = a.numpy()[:, 126:127, 151:153].reshape(-1, 3)
-            cmap = cm.get_cmap("Set1")
-            for i in range(3):
-                ax_samples[0].plot(np.arange(a_plot.shape[0]), a_plot[:, i], "--", color=cmap(i))
-                ax_samples[0].plot(np.arange(samples_plot.shape[0]), samples_plot[:, i], color=cmap(i))
-                ax_samples[1].plot(np.arange(a_plot.shape[0]), a_plot2[:, i], "--", color=cmap(i))
-                ax_samples[1].plot(np.arange(samples_plot.shape[0]), samples_plot2[:, i], color=cmap(i))
             plt.show()
 
             fig_logits, ax_logits = plt.subplots(1, 3)
