@@ -24,7 +24,8 @@ from tensorflow import keras
 
 
 class NestedGRUCell(DropoutRNNCellMixin, l.Layer):
-    def __init__(self, nodes, dropout, recurent_dropout, hidden_size_in, hidden_size_out, regularizer=None, **kwargs):
+    def __init__(self, nodes, dropout, recurent_dropout, hidden_size_in, hidden_size_out, regularizer=None, gnn_h=False,
+                 **kwargs):
         super(NestedGRUCell, self).__init__(**kwargs)
         self.tot_nodes = nodes
         self.hidden_size_in = hidden_size_in
@@ -32,6 +33,14 @@ class NestedGRUCell(DropoutRNNCellMixin, l.Layer):
         self.recurrent_dropout = recurent_dropout
         self.dropout = dropout
         self.regularizer = regularizer
+        self.gnn_h = gnn_h
+        if tf.compat.v1.executing_eagerly_outside_functions():
+            self._enable_caching_device = kwargs.pop('enable_caching_device', True)
+        else:
+            self._enable_caching_device = kwargs.pop('enable_caching_device', False)
+
+        if self.gnn_h:
+            self.gat = GATConv(channels=hidden_size_out, attn_heads=1, concat_heads=True, dropout_rate=0)
 
     def build(self, input_shape):
         default_caching_device = _caching_device(self)
@@ -52,7 +61,10 @@ class NestedGRUCell(DropoutRNNCellMixin, l.Layer):
                                    regularizer=self.regularizer, caching_device=default_caching_device)
 
     def call(self, inputs, states, training, *args, **kwargs):
-        x = inputs
+        if self.gnn_h:
+            x, a = inputs
+        else:
+            x = inputs
         h = states
         if 0 < self.recurrent_dropout < 1:
             h_mask = self.get_recurrent_dropout_mask_for_cell(inputs=states, training=training, count=1)
@@ -60,6 +72,8 @@ class NestedGRUCell(DropoutRNNCellMixin, l.Layer):
         if 0 < self.dropout < 1:
             x_mask = self.get_dropout_mask_for_cell(inputs=x, training=training, count=1)
             x = x * x_mask
+        if self.gnn_h:
+            h = self.gat([x, a])
         u = tf.nn.sigmoid(self.b_u + tf.concat([x, h], -1) @ self.W_u)
         r = tf.nn.sigmoid(self.b_r + tf.concat([x, h], -1) @ self.W_r)
         c = tf.nn.tanh(self.b_c + tf.concat([x, r * h], -1) @ self.W_c)
@@ -68,11 +82,11 @@ class NestedGRUCell(DropoutRNNCellMixin, l.Layer):
 
     def get_config(self):
         config = {"nodes": self.tot_nodes,
-                  "nodes_features": self.nodes_features,
                   "hidden_size_in": self.hidden_size_in,
                   "hidden_size_out": self.hidden_size_out,
                   "dropout": self.dropout,
-                  "recurrent_dropout": self.recurrent_dropout
+                  "recurrent_dropout": self.recurrent_dropout,
+                  "regularizer": self.regularizer
                   }
         config.update(_config_for_enable_caching_device(self))
         base_config = super(NestedGRUCell, self).get_config()
@@ -81,7 +95,7 @@ class NestedGRUCell(DropoutRNNCellMixin, l.Layer):
 
 class RecurrentEncoderDecoder(DropoutRNNCellMixin, keras.layers.Layer):
     def __init__(self, nodes, features, channels, attention_heads, hidden_size, dropout_adj, dropout, recurrent_dropout,
-                 regularizer=None, qr=True, symmetric=True, **kwargs):
+                 regularizer=None, qr=True, symmetric=True, add_self_loop=False, gnn=True, gnn_h=False, **kwargs):
         super(RecurrentEncoderDecoder, self).__init__(**kwargs)
         self.tot_nodes = nodes
         self.nodes_features = features
@@ -94,50 +108,53 @@ class RecurrentEncoderDecoder(DropoutRNNCellMixin, keras.layers.Layer):
         self.channels = channels
         self.regularizer = regularizer
         self.symmetric = symmetric
+        self.gnn = gnn
+        self.gnn_h = gnn_h
         self.state_size = [tf.TensorShape((self.tot_nodes, self.hidden_size)),
                            tf.TensorShape((self.tot_nodes, self.hidden_size)),
                            tf.TensorShape((self.tot_nodes, self.hidden_size))]
         self.output_size = [tf.TensorShape((self.tot_nodes, self.tot_nodes, 3))]
-        self.dnn_emb = l.Dense(self.nodes_features, "relu")
-        self.dnn_emb1 = l.Dense(self.nodes_features, "relu")
-        if self.symmetric:
-            self.gnn_in = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True,
-                                  dropout_rate=0, kernel_regularizer=self.regularizer,
-                                  bias_regularizer=self.regularizer, attn_kernel_regularizer=self.regularizer,
-                                  activation="relu")
-            self.gnn_in1 = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True,
-                                  dropout_rate=0, kernel_regularizer=self.regularizer,
-                                  bias_regularizer=self.regularizer, attn_kernel_regularizer=self.regularizer,
-                                  activation="relu")
-            self.gnn_out = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True,
-                                   dropout_rate=0, kernel_regularizer=self.regularizer,
-                                   bias_regularizer=self.regularizer, attn_kernel_regularizer=self.regularizer,
-                                   activation="relu")
-            self.gnn_out1 = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True,
-                                   dropout_rate=0, kernel_regularizer=self.regularizer,
-                                   bias_regularizer=self.regularizer, attn_kernel_regularizer=self.regularizer,
-                                   activation="relu")
-        else:
-            self.gnn = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True,
-                               dropout_rate=0, kernel_regularizer=self.regularizer,
-                               bias_regularizer=self.regularizer, attn_kernel_regularizer=self.regularizer,
-                               activation="relu")
+        '''self.dnn_emb = l.Dense(self.nodes_features, "relu")
+        self.dnn_emb1 = l.Dense(self.nodes_features, "relu")'''
+        if self.gnn:
+            if self.symmetric:
+                self.gnn_in = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True,
+                                      dropout_rate=0, kernel_regularizer=self.regularizer,
+                                      bias_regularizer=self.regularizer, attn_kernel_regularizer=self.regularizer,
+                                      activation="relu", add_self_loops=add_self_loop)
+                self.gnn_in1 = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True,
+                                       dropout_rate=0, kernel_regularizer=self.regularizer,
+                                       bias_regularizer=self.regularizer, attn_kernel_regularizer=self.regularizer,
+                                       activation="relu", add_self_loops=add_self_loop)
+                self.gnn_out = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True,
+                                       dropout_rate=0, kernel_regularizer=self.regularizer,
+                                       bias_regularizer=self.regularizer, attn_kernel_regularizer=self.regularizer,
+                                       activation="relu", add_self_loops=add_self_loop)
+                self.gnn_out1 = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True,
+                                        dropout_rate=0, kernel_regularizer=self.regularizer,
+                                        bias_regularizer=self.regularizer, attn_kernel_regularizer=self.regularizer,
+                                        activation="relu", add_self_loops=add_self_loop)
+            else:
+                self.gnn_gat = GATConv(channels=self.channels, attn_heads=self.attention_heads, concat_heads=True,
+                                       dropout_rate=0, kernel_regularizer=self.regularizer,
+                                       bias_regularizer=self.regularizer, attn_kernel_regularizer=self.regularizer,
+                                       activation="relu", add_self_loops=add_self_loop)
         self.recurrent_p = NestedGRUCell(nodes, dropout, recurrent_dropout, self.hidden_size_in, self.hidden_size,
-                                         regularizer=self.regularizer, name="rec_p")
+                                         regularizer=self.regularizer, name="rec_p", gnn_h=self.gnn_h)
         self.recurrent_mu = NestedGRUCell(nodes, dropout, recurrent_dropout, self.hidden_size_in, self.hidden_size,
-                                          regularizer=self.regularizer, name="rec_mu")
+                                          regularizer=self.regularizer, name="rec_mu", gnn_h=self.gnn_h)
         self.recurrent_sigma = NestedGRUCell(nodes, dropout, recurrent_dropout, self.hidden_size_in, self.hidden_size,
-                                             regularizer=self.regularizer, name="rec_sigma")
+                                             regularizer=self.regularizer, name="rec_sigma", gnn_h=self.gnn_h)
         self.decoder_mu = BatchBilinearDecoderDense(activation="relu", regularizer=None, qr=qr)
         self.decoder_sigma = BatchBilinearDecoderDense(activation=None, regularizer=None, qr=qr)
-        self.decoder_p = BatchBilinearDecoderDense(activation=None, regularizer=None, qr=qr)
+        self.decoder_p = BatchBilinearDecoderDense(activation=None, regularizer=None, qr=qr, zero_diag=False)
         self.dropout = dropout_adj
         self._enable_caching_device = kwargs.pop('enable_caching_device', True)
 
     def build(self, input_shapes):
-        '''x, a = input_shapes
-        self.kernel = self.add_weight(shape=(x[-1], self.hidden_size_in//2), name="x_kernel")'''
-        pass
+        x, a = input_shapes
+        if not self.gnn:
+            self.kernel = self.add_weight(shape=(x[-1], self.hidden_size_in), name="x_kernel")
 
     def call(self, inputs, states, training=True):
         x, a = tf.nest.flatten(inputs)
@@ -145,23 +162,31 @@ class RecurrentEncoderDecoder(DropoutRNNCellMixin, keras.layers.Layer):
         if 0 < self.dropout < 1:
             inputs_mask = self.get_dropout_mask_for_cell(inputs=a, training=training, count=1)
             a = a * inputs_mask
-        x = self.dnn_emb1(self.dnn_emb(x))
-        # x = x @ self.kernel
-        if self.symmetric:
-            a_lower = tf.linalg.LinearOperatorLowerTriangular(a).to_dense()
-            a_lower_symm = a_lower + tf.transpose(a_lower, perm=(0, 2, 1))
-            a_upper = tf.linalg.LinearOperatorLowerTriangular(tf.transpose(a, perm=(0, 2, 1))).to_dense()
-            a_upper_symm = a_upper + tf.transpose(a_upper, perm=(0, 2, 1))
-            x_prime_in = self.gnn_in1([self.gnn_in([x, a_lower_symm]),  a_lower_symm])  # B x N x d
-            x_prime_out = self.gnn_out1([self.gnn_out([x, a_upper_symm]), a_upper_symm])  # B x N x d
-            x_prime = tf.concat([x_prime_in, x_prime_out], -1)
+        # x = self.dnn_emb1(self.dnn_emb(x))
+        if self.gnn:
+            if self.symmetric:
+                '''a_lower = tf.linalg.LinearOperatorLowerTriangular(a).to_dense()
+                a_lower_symm = a_lower + tf.transpose(a_lower, perm=(0, 2, 1))
+                a_upper = tf.linalg.LinearOperatorLowerTriangular(tf.transpose(a, perm=(0, 2, 1))).to_dense()
+                a_upper_symm = a_upper + tf.transpose(a_upper, perm=(0, 2, 1))'''
+                a_upper_symm = tf.transpose(a, perm=(0, 2, 1))
+                '''x_prime_in = self.gnn_in1([self.gnn_in([x, a_lower_symm]),  a_lower_symm])  # B x N x d
+                x_prime_out = self.gnn_out1([self.gnn_out([x, a_upper_symm]), a_upper_symm])  # B x N x d
+                '''
+                x_prime_in = self.gnn_in([x, a])  # B x N x d
+                x_prime_out = self.gnn_out([x, a_upper_symm])  # B x N x d
+                x_prime = tf.concat([x_prime_in, x_prime_out], -1)
+            else:
+                x_prime = self.gnn_gat([x, a])
         else:
-            x_prime = self.gnn([x, a])
+            x_prime = x @ self.kernel
 
         # Recurrence
+        if self.gnn_h:
+            x_prime = [x_prime, a]
         h_prime_p = self.recurrent_p(x_prime, h_p, training=training)
         h_prime_mu = self.recurrent_mu(x_prime, h_mu, training=training)
-        h_prime_sigma = self.recurrent_p(x_prime, h_sigma, training=training)
+        h_prime_sigma = self.recurrent_sigma(x_prime, h_sigma, training=training)
 
         p = self.decoder_p(h_prime_p)
         p = tf.expand_dims(p, -1)
@@ -179,7 +204,12 @@ class RecurrentEncoderDecoder(DropoutRNNCellMixin, keras.layers.Layer):
                   "attention_heads": self.attention_heads,
                   "channels": self.channels,
                   "dropout": self.dropout,
-                  "recurrent_dropout": self.recurrent_dropout}
+                  "regularizer": self.regularizer,
+                  "symmetric": self.symmetric,
+                  "gnn": self.gnn,
+                  "output_size": self.output_size,
+                  "state_size": self.state_size
+                  }
         config.update(_config_for_enable_caching_device(self))
         base_config = super(RecurrentEncoderDecoder, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))

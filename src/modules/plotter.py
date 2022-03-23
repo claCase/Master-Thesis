@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import networkx as nx
+from networkx.algorithms.link_prediction import jaccard_coefficient
 import os
 import pickle as pkl
 from networkx import in_degree_centrality, out_degree_centrality, density
@@ -62,20 +63,20 @@ def in_degree_seq(A_true, A_pred=None, binary=False, save_path=None, time_from=1
 
 
 def degrees_animation(in_degrees, out_degrees, time_from=1964, save_path=None):
-    fig, ax = plt.subplots(2, 1)
+    fig2, ax2 = plt.subplots(2, 1)
 
     def degrees_animation_update(i):
         ax.cla()
         in_true = in_degrees[i][0]
         out_true = out_degrees[i][0]
-        ax[0].hist(in_true, bins=10)
-        ax[1].hist(out_true, bins=10)
-        ax[0].set_title(f"In Degree at time f{time_from + i}")
-        ax[1].set_title(f"Out Degree at time f{time_from + i}")
+        ax2[0].hist(in_true, bins=10)
+        ax2[1].hist(out_true, bins=10)
+        ax2[0].set_title(f"In Degree at time f{time_from + i}")
+        ax2[1].set_title(f"Out Degree at time f{time_from + i}")
 
-    anim = animation.FuncAnimation(degrees_animation_update, len(in_degrees), writer="pillow")
+    anim2 = animation.FuncAnimation(fig2, degrees_animation_update, len(in_degrees), writer="pillow")
     if save_path is not None:
-        anim.save(os.path.join(save_path, "true_degree_animation.gif"))
+        anim2.save(os.path.join(save_path, "true_degree_animation.gif"))
         plt.close()
 
     fig, ax = plt.subplots(2, 1)
@@ -89,7 +90,7 @@ def degrees_animation(in_degrees, out_degrees, time_from=1964, save_path=None):
         ax[0].set_title(f"In Degree at time f{time_from + i}")
         ax[1].set_title(f"Out Degree at time f{time_from + i}")
 
-    anim = animation.FuncAnimation(degrees_animation_update2, len(in_degrees), writer="pillow")
+    anim = animation.FuncAnimation(fig, degrees_animation_update2, len(in_degrees), writer="pillow")
     if save_path is not None:
         anim.save(os.path.join(save_path, "pred_degree_animation.gif"))
 
@@ -306,7 +307,7 @@ def link_density(A):
 def temporal_density(At, At_pred, baci=True, save_dir=None):
     ds = []
     ds_pred = []
-    print(At.shape, At_pred.shape)
+    At_pred = np.where(At_pred<1, 0, At_pred)
     for a, a_pred in zip(At, At_pred):
         d = link_density(a)
         ds.append(d)
@@ -410,8 +411,8 @@ def node_degree_evolution(stats_folder, by=5, save=True):
         from_time = 1996
     else:
         from_time = 1965
-    axs[1, 1].legend(*plot_legends, labels=from_time + np.arange(0, by) * per_year)
-    axs[0, 1].legend(*plot_legends1, labels=from_time + np.arange(0, by) * per_year)
+    axs[0, 1].legend(*plot_legends, labels=from_time + np.arange(0, by) * per_year)
+    axs[0, 0].legend(*plot_legends1, labels=from_time + np.arange(0, by) * per_year)
     if save:
         plt.savefig(os.path.join(stats_folder, "in_out_clos.png"))
         plt.close()
@@ -483,7 +484,7 @@ def samples_from_model(model=None, data=None, weights_path=None, n_samples=10, n
 
 
 def plot_uncertainty(samples_path=None, samples=None, logits=None, baci=True, r=6, save=False, save_path=None,
-                     from_nodes=[80, 82], to_nodes=[2, 4], montecarlo=False):
+                     from_nodes=[80, 82], to_nodes=[2, 4], montecarlo=False, inverse=False, a_true=None):
     if samples_path is not None:
         save_path = samples_path
         with open(os.path.join(samples_path, "predictions.pkl"), "rb") as file:
@@ -496,19 +497,25 @@ def plot_uncertainty(samples_path=None, samples=None, logits=None, baci=True, r=
     elif samples is None or logits is None:
         raise ValueError("Samples path cannot be None when samples or logits are None")
 
-    if tf.is_tensor(samples) or tf.is_tensor(logits):
+    if tf.is_tensor(samples):
         samples = samples.numpy()
+    if tf.is_tensor(logits):
         logits = logits.numpy()
-    a_t, t, n = load_dataset(baci, model_pred=False, r=r)
+    if a_true is None:
+        a_t, t, n = load_dataset(baci, model_pred=False, r=r)
+    else:
+        a_t = a_true
+    if inverse:
+        a_t = np.swapaxes(a_t, 2, 1)
+        logits = np.swapaxes(logits, 3, 2)
+        samples = np.swapaxes(samples, 4, 3)
     a_t = a_t[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]]
     a_t = tf.clip_by_value(tf.math.log(a_t), 0, 1e5).numpy()
-
-    # Logits : T x n_drop x 1 x N x N x 3
+    # Logits : T x n_drop x N x N x 3
     lognormal = zero_inflated_lognormal(logits)
-    logits = tf.squeeze(logits).numpy()
-    Mu = logits[..., 1:2].squeeze()
-    P = tf.nn.sigmoid(logits[..., :1]).numpy().squeeze()
-    V = compute_sigma(logits[..., -1:]).numpy().squeeze()
+    Mu = logits[..., 1:2].squeeze(-1)
+    P = tf.nn.sigmoid(logits[..., :1]).numpy().squeeze(-1)
+    V = compute_sigma(logits[..., -1:]).numpy().squeeze(-1)
     mean_Mu = np.mean(Mu, axis=1)
     mean_V = np.mean(V, axis=1)
     mean_P = np.mean(P, axis=1)
@@ -522,31 +529,39 @@ def plot_uncertainty(samples_path=None, samples=None, logits=None, baci=True, r=
 
     # Samples :  T x n_drop x n_samples x N x N
     # Calculate tot mean and variance with Monte Carlo
-    tot_sample_mean_samples = np.mean(samples, axis=(1, 2))
-    tot_sample_mean_samples = tf.clip_by_value(tf.math.log(tot_sample_mean_samples), 0, 100).numpy()
-    tot_sample_variance_samples = np.sqrt(np.var(samples, axis=(1, 2)))
-    tot_sample_variance_samples = tf.clip_by_value(tf.math.log(tot_sample_variance_samples), 0, 100).numpy()
+    tot_sample_mean_samples = tf.clip_by_value(tf.math.log(samples), 0, 100).numpy()
+    tot_sample_mean_samples = np.mean(tot_sample_mean_samples, axis=(1, 2))
+    tot_sample_variance_samples = tf.clip_by_value(tf.math.log(samples), 0, 100).numpy()
+    tot_sample_variance_samples = np.sqrt(np.var(tot_sample_variance_samples, axis=(1, 2)))
 
     # Calculate sample epistemic uncertainty over parameters
     if samples.shape[1] != 1:
         variance_Mu = np.var(Mu, axis=(1)).squeeze()
         variance_V = np.var(V, axis=(1)).squeeze()
         variance_P = np.var(P, axis=(1)).squeeze()
-
+    else:
+        variance_Mu = 0
+        variance_V = 0
+        variance_P = 0
     edges = (from_nodes[1] - from_nodes[0]) * (to_nodes[1] - to_nodes[0])
     years = np.arange(logits.shape[0])
+    cmap = cm.get_cmap("Set1")
     if samples.shape[1] == 1:
         fig, axs = plt.subplots(3, 1)
         fig.suptitle("Deterministic Parameters")
-        axs[0].plot(mean_Mu[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges))
+        mu = mean_Mu[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
+        sd = mean_V[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
+        p = mean_P[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
+        for i in range(edges):
+            axs[0].plot(mu[:, i], color=cmap(i))
+            axs[1].plot(sd[:, i], color=cmap(i))
+            axs[2].plot(p[:, i], color=cmap(i))
         axs[0].set_title("Mean Parameter")
-        axs[1].plot(mean_V[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges))
         axs[1].set_title("Standard Deviation Parameter")
-        axs[2].plot(mean_P[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges))
         axs[2].set_title("Probability Parameter")
         axs[2].set_ylim(0, 1)
         if save:
-            plt.savefig(os.path.join(save_path, "deterministic_parameters.png"))
+            plt.savefig(os.path.join(save_path, f"deterministic_parameters_{inverse}.png"))
             plt.close()
     else:
         fig, axs = plt.subplots(3, 1, figsize=(15, 10))
@@ -579,8 +594,7 @@ def plot_uncertainty(samples_path=None, samples=None, logits=None, baci=True, r=
         lower_p, upper_p = mean_P - variance_P, mean_P + variance_P
         lower_v, upper_v = mean_V - variance_V, mean_V + variance_V
 
-        cmap = cm.get_cmap("Set1")
-        for i in range(Mu_.shape[-1]):
+        for i in range(edges):
             for j in range(Mu_.shape[1]):
                 axs[0].scatter(years, Mu_[:, j, i], color=cmap(i), s=1)
                 axs[1].scatter(years, V_[:, j, i], color=cmap(i), s=1)
@@ -594,8 +608,9 @@ def plot_uncertainty(samples_path=None, samples=None, logits=None, baci=True, r=
         axs[0].set_title("Epistemic Uncertainty over the Mean")
         axs[1].set_title("Epistemic Uncertainty over the Variance")
         axs[2].set_title("Epistemic Uncertainty over the Probability")
+        axs[2].set_ylim(0, 1)
         if save:
-            plt.savefig(os.path.join(save_path, "epistemic_parameters.png"))
+            plt.savefig(os.path.join(save_path, f"epistemic_parameters_{inverse}.png"))
             plt.close()
 
     fig3, axs3 = plt.subplots(1, 1, figsize=(15, 10))
@@ -609,14 +624,22 @@ def plot_uncertainty(samples_path=None, samples=None, logits=None, baci=True, r=
     axs3.set_xlabel("Years")
     upper_mean = tot_sample_mean_samples + np.sqrt(tot_sample_variance_samples)
     lower_mean = tot_sample_mean_samples - np.sqrt(tot_sample_variance_samples)
+    upper_mean_sample_variance = tot_sample_mean_samples[:, from_nodes[0]:from_nodes[1],
+                                 to_nodes[0]:to_nodes[1]].reshape(-1, edges) + variance_Mu
+    lower_mean_sample_variance = tot_sample_mean_samples[:, from_nodes[0]:from_nodes[1],
+                                 to_nodes[0]:to_nodes[1]].reshape(-1, edges) - variance_Mu
+
     lower_mean = lower_mean[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
     upper_mean = upper_mean[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
     for i in range(edges):
-        axs3.fill_between(years, lower_mean[:, i], upper_mean[:, i], color=cmap(i), alpha=0.5)
+        axs3.fill_between(years, lower_mean[:, i], upper_mean[:, i], color=cmap(i), alpha=0.4)
+        axs3.fill_between(years, lower_mean_sample_variance[:, i], upper_mean_sample_variance[:, i], color=cmap(i),
+                          alpha=0.55)
+
     for i in range(edges):
         axs3.plot(a_t_reshaped[:, i], "--", label="True Edge Values", color=cmap(i))
     if save:
-        plt.savefig(os.path.join(save_path, "sample_aleatoric_uncertainty.png"))
+        plt.savefig(os.path.join(save_path, f"sample_aleatoric_uncertainty_{inverse}.png"))
         plt.close()
     if montecarlo:
         fig2, axs2 = plt.subplots(1, 1, figsize=(15, 10))
@@ -624,7 +647,8 @@ def plot_uncertainty(samples_path=None, samples=None, logits=None, baci=True, r=
             fig2.suptitle("Montecarlo Aleatoric Uncertainty")
         else:
             fig2.suptitle("Montecarlo Epistemic + Aleatoric Uncertainty")
-        drop_mean_reshaped = drop_mean_samples[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1, edges)
+        drop_mean_reshaped = drop_mean_samples[:, from_nodes[0]:from_nodes[1], to_nodes[0]:to_nodes[1]].reshape(-1,
+                                                                                                                edges)
         for i in range(edges):
             axs2.plot(drop_mean_reshaped[:, i], color=cmap(i))
         axs2.set_ylabel("Log of Mean and Standard Deviation")
@@ -638,71 +662,42 @@ def plot_uncertainty(samples_path=None, samples=None, logits=None, baci=True, r=
         for i in range(edges):
             axs2.plot(a_t_reshaped[:, i], "--", label="True Edge Values", color=cmap(i))
         if save:
-            plt.savefig(os.path.join(save_path, "aleatoric_uncertainty.png"))
+            plt.savefig(os.path.join(save_path, f"aleatoric_uncertainty_{inverse}.png"))
             plt.close()
 
 
-def plot_centrality(statistics_path, model_samples_path, centralities=["eig_in", "eig_out"],
-                    save=False, by=20):
+def plot_centrality(statistics_path, a_true, preds, centralities=["eig_in", "eig_out", "clos"],
+                    save=False, by=20, baci=True):
     df = pd.read_csv(os.path.join(statistics_path, "stats.csv"))
-    stats_details = pd.read_csv(os.path.join(statistics_path, "stats_details.csv"))
-    baci = stats_details["baci"].values[0]
-    t = stats_details["t"].values[0]
-    r = stats_details["r"].values[0]
-    n = stats_details["n"].values[0]
-    if baci:
-        with open(os.path.join(os.getcwd(), "Data", "baci_sparse_price.pkl"), "rb") as file:
-            data = pkl.load(file)
-            data = tf.sparse.reorder(data)
-            data_slice = tf.sparse.slice(data, (0, 0, 0, r), (t, n, n, 1))
-            data_slice = tf.sparse.transpose(data_slice, perm=(0, 3, 1, 2))
-    else:
-        with open(
-                os.path.join(os.getcwd(), "Data", "complete_data_final_transformed_no_duplicate.pkl"),
-                "rb",
-        ) as file:
-            data_np = pkl.load(file)
-        data_sp = tf.sparse.SparseTensor(
-            data_np[:, :4], data_np[:, 4], np.max(data_np, 0)[:4] + 1
-        )
-        data_sp = tf.sparse.reorder(data_sp)
-        data_slice = tf.sparse.slice(data_sp, (1, r, 0, 0), (t, 1, n, n))
-
-    A_true_t = tf.sparse.reduce_sum(data_slice, 1).numpy()
-    with open(os.path.join(model_samples_path, "predictions.pkl"), "rb") as file:
-        model_samples = pkl.load(file)
-
-    A_pred_t = np.mean(model_samples, (1, 2))
+    A_true_t = a_true
+    A_pred_t = preds
+    t = A_pred_t.shape[0]
     centrality_mapping = {"eig_in": "In-Eigenvecor", "eig_out": "Out-Eigenvecor", "in": "In-Degree",
                           "out": "Out-Degree", "clos": "Closeness"}
     for centrality in centralities:
+        print(centrality)
         for i in range(0, t - 1, by):
+            print(i)
             A_true = A_true_t[i]
-            A_true = np.log(np.where(A_true == 0, 1, A_true))
             A_pred = A_pred_t[i]
-            A_pred = np.log(np.where(A_pred == 0, 1, A_pred))
-            eig_in_true = df[(df["time"] == t) & (df["true"] == True)][centrality].values
-            eig_out_true = df[(df["time"] == t) & (df["true"] == True)][centrality].values
-            eig_in_pred = df[(df["time"] == t) & (df["true"] == False)][centrality].values
-            eig_out_pred = df[(df["time"] == t) & (df["true"] == False)][centrality].values
+            centrality_true = df[(df["time"] == t) & (df["true"] == True)][centrality].values
+            centrality_pred = df[(df["time"] == t) & (df["true"] == False)][centrality].values
+            print(len(centrality_pred), A_pred.shape[0])
+            print(len(centrality_true), A_true.shape[0])
             g_true = nx.from_numpy_matrix(A_true, create_using=nx.DiGraph)
             g_pred = nx.from_numpy_matrix(A_pred, create_using=nx.DiGraph)
             layout_true = np.asarray(list(nx.drawing.spring_layout(g_true, k=2).values()))
             layout_pred = np.asarray(list(nx.drawing.spring_layout(g_pred, k=2).values()))
-            fig, axs = plt.subplots(2, 2, figsize=(15, 15))
+            fig, axs = plt.subplots(1, 2, figsize=(15, 15))
             fig.suptitle(f"{centrality} for Year {t}")
-            axs[0, 0].scatter(layout_true[:, 0], layout_true[:, 1], s=eig_in_true)
-            axs[0, 0].set_title(f"{centrality_mapping[centrality]} Centrality")
-            axs[0, 0].set_ylabel("True Graph")
-            axs[0, 1].scatter(layout_true[:, 0], layout_true[:, 1], s=eig_out_true)
-            axs[0, 1].set_title(f"{centrality_mapping[centrality]} Centrality")
-            axs[1, 0].scatter(layout_pred[:, 0], layout_pred[:, 1], s=eig_in_pred)
-            axs[1, 0].set_ylabel("Predicted Graph")
-            axs[1, 1].scatter(layout_pred[:, 0], layout_pred[:, 1], s=eig_out_pred)
-            plot_names(layout_true, axs[0, 0], baci=baci)
-            plot_names(layout_true, axs[0, 1], baci=baci)
-            plot_names(layout_pred, axs[1, 0], baci=baci)
-            plot_names(layout_pred, axs[1, 1], baci=baci)
+            axs[0].scatter(layout_true[:, 0], layout_true[:, 1], s=centrality_true)
+            axs[0].set_title(f"{centrality_mapping[centrality]} Centrality")
+            axs[0].set_ylabel("True Graph")
+            axs[1].scatter(layout_pred[:, 0], layout_pred[:, 1], s=centrality_pred)
+            axs[1].set_title(f"{centrality_mapping[centrality]} Centrality")
+            axs[1].set_ylabel("Predicted Graph")
+            plot_names(layout_true, axs[0], baci=baci)
+            plot_names(layout_pred, axs[1], baci=baci)
             if save:
                 plt.savefig(os.path.join(statistics_path, f"centrality_{centrality}_{i}.png"))
                 plt.close()
@@ -712,28 +707,17 @@ def plot_eigen_centrality_timeseries(statistics_path):
     df = pd.read_csv(statistics_path)
 
 
-def plot_evolution_of_edges(samples_path, by=4, save=True):
-    with open(os.path.join(samples_path, "predictions.pkl"), "rb") as file:
-        predictions = pkl.load(file)
-    specs = pd.read_csv(os.path.join(samples_path, "model_spec.csv"))
-    predictions = np.mean(predictions, axis=(1, 2))
-    t = specs["t"].values[0]
-    n = specs["n"].values[0]
-    r = specs["r"].values[0]
-    baci = specs["baci"].values[0]
-    A_true_t, n, t = load_dataset(baci, r=r, model_pred=False)
-    A_true_t = A_true_t[1:]
-    A_true_t = tf.clip_by_value(tf.math.log(A_true_t), 0, 1e10).numpy()
-    predictions = tf.clip_by_value(tf.math.log(predictions), 0, 1e10).numpy()
+def plot_evolution_of_edges(predictions, a_true, by=4, save_path=None):
+    predictions = np.where(predictions<1, 0, predictions)
     per_year = predictions.shape[0] // by
     lim = np.linspace(0, 30, 100)
     cmap = cm.get_cmap("Blues")
     cmap_pred = cm.get_cmap("Reds")
     colors = cmap(np.linspace(0.2, 1, by))
     colors_pred = cmap_pred(np.linspace(0.2, 1, by))
-    fig, axs = plt.subplots(1, 2)
+    fig, axs = plt.subplots(1, 2, figsize=(10,6))
     for i in range(by):
-        at_true = A_true_t[i * per_year].flatten()
+        at_true = a_true[i * per_year].flatten()
         at_true = at_true[at_true > 0.2]
         at = predictions[i * per_year].flatten()
         at = at[at > 1]
@@ -747,18 +731,18 @@ def plot_evolution_of_edges(samples_path, by=4, save=True):
     axs[1].xaxis.set_label_position('top')
     axs[0].set_ylabel("Kernel Density Estimate")
     axs[1].set_ylabel("Log of edge values")
-    if baci:
+    if a_true.shape[0] > 30:
         from_time = 1996
     else:
         from_time = 1965
-    axs[1].legend(legend_ax, labels=from_time + np.arange(0, by) * per_year)
-    axs[0].legend(legend_ax, labels=from_time + np.arange(0, by) * per_year)
-    if save:
-        plt.savefig(os.path.join(samples_path, "edge_distr_evolution.png"))
+    axs[1].legend(legend_ax, labels=from_time + np.arange(0, per_year) * by)
+    axs[0].legend(legend_ax0, labels=from_time + np.arange(0, per_year) * by)
+    if save_path is not None:
+        plt.savefig(os.path.join(save_path, "edge_distr_evolution.png"))
         plt.close()
 
 
-def plot_roc_precision_confusion(a, logits, figures_dir, save=True):
+def plot_roc_precision_confusion(a, logits, save_path=None):
     plt.figure()
     bin_true = tf.reshape(tf.where(a == 0, 0.0, 1.0), [-1]).numpy()
     p_pred = tf.reshape(tf.nn.sigmoid(logits[..., :1]), [-1]).numpy()
@@ -775,8 +759,8 @@ def plot_roc_precision_confusion(a, logits, figures_dir, save=True):
     plt.ylabel("True Positive Rate")
     plt.plot((0, 1), (0, 1), color="black")
     plt.colorbar()
-    if save:
-        plt.savefig(os.path.join(figures_dir, "roc.png"))
+    if save_path is not None:
+        plt.savefig(os.path.join(save_path, "roc.png"))
         plt.close()
 
     plt.figure()
@@ -792,8 +776,8 @@ def plot_roc_precision_confusion(a, logits, figures_dir, save=True):
     plt.ylabel("Recall")
     plt.plot((0, 1), (1, 0), color="black")
     plt.colorbar()
-    if save:
-        plt.savefig(os.path.join(figures_dir, "prec_rec.png"))
+    if save_path is not None:
+        plt.savefig(os.path.join(save_path, "prec_rec.png"))
         plt.close()
 
     fig, ax = plt.subplots(1, 1)
@@ -812,8 +796,8 @@ def plot_roc_precision_confusion(a, logits, figures_dir, save=True):
     ax.text(1, 1, str(conf[1, 1]), fontsize=13)
 
     plt.colorbar(img, ax=ax)
-    if save:
-        plt.savefig(os.path.join(figures_dir, "confusion_matrix.png"))
+    if save_path is not None:
+        plt.savefig(os.path.join(save_path, "confusion_matrix.png"))
         plt.close()
 
     plt.figure()
@@ -821,10 +805,10 @@ def plot_roc_precision_confusion(a, logits, figures_dir, save=True):
     false_negative = p_pred[bin_true == 0]
     plt.hist(true_pos, bins=100, density=True, alpha=0.4, color="green", label="positive preds")
     plt.hist(false_negative, bins=100, density=True, alpha=0.4, color="red", label="negative preds")
-    plt.plot((0.5, 0.5), (0, 70), lw=1)
+    plt.plot((0.5, 0.5), (0, 30), lw=1)
     plt.legend()
-    if save:
-        plt.savefig(os.path.join(figures_dir, "distr_preds.png"))
+    if save_path is not None:
+        plt.savefig(os.path.join(save_path, "distr_preds.png"))
         plt.close()
 
     plt.figure()
@@ -836,28 +820,37 @@ def plot_roc_precision_confusion(a, logits, figures_dir, save=True):
     plt.plot(cal_true, cal_pred, color="blue")
     plt.plot((0, 1), (0, 1), "-", color="black")
     plt.title(f"Calibration Curve \n ECE: {ece}")
-    if save:
-        plt.savefig(os.path.join(figures_dir, "calibration_curve.png"))
+    if save_path is not None:
+        plt.savefig(os.path.join(save_path, "calibration_curve.png"))
     plt.close()
 
 
-def visualize_jaccard_matrix(stats_path, by=5):
+def visualize_jaccard_matrix(stats_path, save_path=None):
     with open(os.path.join(stats_path, "jaccard_pred_true.pkl"), "rb") as file:
         jaccards = pkl.load(file)
     stats = pd.read_csv(os.path.join(stats_path, "stats_details.csv"))
     baci = stats["baci"].values[0]
     if baci:
-        from_time = 1995
+        from_time = 1993
     else:
         from_time = 1964
-    for i, jacc in enumerate(jaccards[1::15]):
-        fig, ax = plt.subplots(1, 2, figsize=(10, 10))
-        ax[0].set_title(f"Time {from_time + i * 15 + 1}", loc="right")
-        ax[0].imshow(jacc[1], cmap="Blues")
+
+    fig, ax = plt.subplots(1, 2, figsize=(10, 10))
+
+    def update(i):
+        ax[0].cla()
+        ax[1].cla()
+        ax[0].set_title(f"Time {from_time + i}", loc="right")
+        ax[0].imshow(jaccards[i][1], cmap="Blues")
         ax[0].set_xlabel("True adjacency Jaccard Coefficients")
         ax[1].set_xlabel("Predicted adjacency Jaccard Coefficients")
-        a = ax[1].imshow(jacc[0], cmap="Reds")
-        plt.savefig(os.path.join(stats_path, f"jaccard{i}.png"))
+        ax[1].imshow(jaccards[i][0], cmap="Reds")
+        if save_path is not None:
+            plt.savefig(os.path.join(save_path, f"jaccard{i}.png"))
+
+    anim = animation.FuncAnimation(fig, update, frames=len(jaccards) - 1, repeat=True)
+    if save_path is not None:
+        anim.save(os.path.join(save_path, "jaccard_animation.gif"), writer="pillow")
         plt.close()
 
 
@@ -886,6 +879,71 @@ def plot_predictions_graph(predictions_path, save=True, from_pred=[140, 144], to
 def rank_by_centrality(stats_path):
     df = pd.read_csv(os.path.join(stats_path, "stats.csv"))
     df[""]["eig_in"]
+
+
+def in_out_degree(At_true, At_pred, save_all_time=False, save_path=None, baci=True):
+    fig4, ax4 = plt.subplots(1, 2, figsize=(10, 6))
+    At_pred = np.where(At_pred<1, 0, At_pred)
+    if baci:
+        from_time = 1993
+    else:
+        from_time = 1964
+
+    def update4(i):
+        ax4[0].cla()
+        ax4[1].cla()
+        fig4.suptitle(f"Time {i+from_time}")
+        ax4[0].set_title("In-degree Distribution")
+        ax4[1].set_title("Out-degree Distribution")
+        g = nx.from_numpy_matrix(At_pred[i], create_using=nx.DiGraph)
+        in_deg = dict(g.in_degree).values()
+        out_deg = dict(g.out_degree).values()
+
+        g2 = nx.from_numpy_matrix(At_true[i + 1], create_using=nx.DiGraph)
+        in_deg_true = dict(g2.in_degree).values()
+        out_deg_true = dict(g2.out_degree).values()
+        '''ax4[0].set_xlim(0, 120)
+        ax4[0].set_ylim(0, 90)
+        ax4[1].set_xlim(0, 120)
+        ax4[1].set_ylim(0, 90)'''
+        ax4[0].hist(in_deg, alpha=0.4, color="red", label="Predicted")
+        ax4[0].hist(in_deg_true, alpha=0.4, color="blue", label="True")
+
+        ax4[1].hist(out_deg, alpha=0.4, color="red", label="Predicted")
+        ax4[1].hist(out_deg_true, alpha=0.4, color="blue", label="True")
+
+        plt.legend()
+        if save_path is not None and save_all_time:
+            plt.savefig(os.path.join(save_path, f"degree_distr_{i}.png"))
+
+    anim4 = animation.FuncAnimation(fig4, update4, frames=len(At_true) - 1, repeat=True)
+    if save_path is not None:
+        anim4.save(os.path.join(save_path, "degree_animation.gif"), writer="pillow")
+        plt.close()
+
+
+def edge_distribution_animation(samples, adj_true, save_path=None, baci=True):
+    max = np.max(samples)
+    range_axis = (1.0, max)
+    fig, ax = plt.subplots(1, 1)
+
+    def update(i):
+        ax.cla()
+        if baci:
+            fig.suptitle(f"Year {1994 + i}")
+        else:
+            fig.suptitle(f"Year {1964 + i}")
+        a_pred = samples[i].flatten()
+        a_true = adj_true[i+1].flatten()
+        ax.hist(a_true, bins=20, alpha=0.5, range=range_axis, color="blue", density=True, label="True")
+        ax.set_ylim((0, .21))
+        ax.hist(a_pred, bins=20, alpha=0.5, range=range_axis, color="red", density=True, label="Pred")
+        ax.legend()
+
+    anim = animation.FuncAnimation(fig=fig, func=update, frames=adj_true.shape[0] - 2, repeat=True)
+    if save_path is not None:
+        anim.save(os.path.join(save_path, "temporal_distr.gif"), writer="pillow")
+        plt.close()
 
 
 if __name__ == "__main__":

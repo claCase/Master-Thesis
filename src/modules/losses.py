@@ -105,7 +105,8 @@ def zero_inflated_lognormal_loss(labels: tf.Tensor,
     """
     # logits = tf.expand_dims(logits, 0)
     # labels = tf.expand_dims(labels, 0)
-    weights = tf.constant(weights) / tf.reduce_sum(weights)
+    #tf.print(labels.shape, logits.shape)
+    #weights = tf.constant(weights) / tf.reduce_sum(weights)
     labels = tf.convert_to_tensor(labels, dtype=tf.float32)
     positive = tf.cast(labels > 0, tf.float32)
     logits = tf.convert_to_tensor(logits, dtype=tf.float32)
@@ -121,7 +122,6 @@ def zero_inflated_lognormal_loss(labels: tf.Tensor,
     classification_loss = tf.expand_dims(classification_loss, axis=-1)
     classification_loss = classification_loss * ce_weights
     classification_loss = tf.reduce_mean(classification_loss, axis=reduce_axis)'''
-
     loc = logits[..., 1:2]
     # loc = tf.math.maximum(tf.nn.relu(loc), tf.math.sqrt(K.epsilon()))
     scale = tf.math.maximum(K.softplus(logits[..., 2:]),tf.math.sqrt(K.epsilon()))

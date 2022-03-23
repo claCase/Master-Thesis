@@ -6,6 +6,7 @@ import tensorflow.keras.backend as K
 from scipy.linalg import block_diag
 import os
 import pickle as pkl
+from sklearn.metrics import explained_variance_score
 
 
 @tf.function
@@ -374,22 +375,27 @@ def sample_from_logits(logits, n_samples, sparse_input, numpy=True):
 
 
 def mean_accuracy_score(A_true, A_pred):
-    abs_squared_error = np.sqrt(np.mean(np.abs(A_true - A_pred), axis=(0,1)))
-    abs_squared = np.sqrt(np.mean(np.abs(A_true), axis=(0,1)))
-    return 1 - abs_squared_error/abs_squared
+    abs_squared_error = np.sqrt(np.mean(np.abs(A_true - A_pred), axis=(0, 1)))
+    abs_squared = np.sqrt(np.mean(np.abs(A_true), axis=(0, 1)))
+    return 1 - abs_squared_error / abs_squared
 
 
-def load_dataset(baci=True, r=6, r2=1, model_pred=True):
+def load_dataset(baci=True, r=6, r2=10, n=175, model_pred=True, features=False, log=True):
+    if r>r2:
+        raise ValueError(f"r: {r} cannot be greater than r2: {r2}")
     if baci:
         with open(os.path.join(os.getcwd(), "Data", "baci_sparse_price.pkl"), "rb") as file:
             t = 24
-            n = 230
             data = pkl.load(file)
             data = tf.sparse.reorder(data)
             data_slice = tf.sparse.slice(data, (0, 0, 0, r), (t, n, n, r2))
             data_slice = tf.sparse.transpose(data_slice, perm=(0, 3, 1, 2))
             data_dense = tf.sparse.reduce_sum(data_slice, 1).numpy()
-
+        if features:
+            with open(os.path.join(os.getcwd(), "Data", "X_input_baci.pkl"), "rb") as file:
+                x_f = pkl.load(file)[:, :n, :n]
+                x_f = np.expand_dims(x_f, 1)
+                x_f = x_f[:-2]
     else:
         with open(
                 os.path.join(os.getcwd(), "Data", "complete_data_final_transformed_no_duplicate.pkl"),
@@ -401,13 +407,35 @@ def load_dataset(baci=True, r=6, r2=1, model_pred=True):
         )
         data_sp = tf.sparse.reorder(data_sp)
         t = 57
-        n = 175
         data_slice = tf.sparse.slice(data_sp, (1, r, 0, 0), (t, r2, n, n))
         data_dense = tf.sparse.reduce_sum(data_slice, 1).numpy()
+        if features:
+            with open(os.path.join(os.getcwd(), "Data", "X_input_not_baci.pkl"), "rb") as file:
+                x_f = pkl.load(file)[:-1, :n, :n]
+            x_f = np.expand_dims(x_f, 1)
     xt = np.expand_dims([np.eye(n)] * t, 1)
+    if features:
+        if log:
+            x_f = np.log(x_f)
+            x_f = np.where(np.isinf(x_f) | np.isnan(x_f), 0, x_f)
+        xt = np.concatenate([xt, x_f], -1)
     if model_pred:
         data_dense = tf.cast(tf.expand_dims(data_dense, 1), tf.float32).numpy()
         return data_dense, xt, n, t
     return data_dense, n, t
 
 
+'''def compute_statistics(a_true, a_pred):
+
+    for t in range(1, a_true.shape[0]):
+        a_score = tf.clip_by_value(tf.math.log(a_train[t + 1][0]), 0, 1e10).numpy()
+        sample_score = tf.clip_by_value(tf.math.log(sample), 0, 1e10).numpy()
+        ma = np.clip(mean_accuracy_score(a_score, sample_score), -10, 1)
+        mean_acc.append(ma)
+        msq = np.clip(mean_squared_error(a_score.reshape(-1), sample_score.reshape(-1)), 0, 100)
+        mean_rmse.append(msq)
+        mabs = np.clip(mean_absolute_error(a_score.reshape(-1), sample_score.reshape(-1)), 0,100)
+        mean_abs.append(mabs)
+        evar = explained_variance_score(a_score.reshape(-1), sample_score.reshape(-1))
+        exp_var.append(evar)
+    t_samples = np.asarray(t_samples)'''

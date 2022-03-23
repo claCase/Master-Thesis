@@ -190,11 +190,12 @@ class BatchBilinearDecoderDense(l.Layer):
     outputs: A of shape batch x N x N
     """
 
-    def __init__(self, activation="relu", qr=False, regularizer="l2"):
+    def __init__(self, activation="relu", qr=False, regularizer="l2", zero_diag=True):
         super(BatchBilinearDecoderDense, self).__init__()
         self.activation = activation
         self.regularizer = regularizer
         self.qr = qr
+        self.zero_diag = zero_diag
 
     def build(self, input_shape):
         x = input_shape
@@ -204,6 +205,7 @@ class BatchBilinearDecoderDense(l.Layer):
             regularizer=self.regularizer,
             name="bilinear_matrix",
         )
+        self.diag =tf.constant(1 - tf.linalg.diag([tf.ones(x[-2])]))
 
     def call(self, inputs, *args, **kwargs):
         x = inputs
@@ -214,12 +216,13 @@ class BatchBilinearDecoderDense(l.Layer):
             Z = tf.matmul(tf.matmul(W, self.R), W_t)
             A = tf.matmul(tf.matmul(Q, Z), Q_t)
             A = activations.get(self.activation)(A)
-            return A
         else:
             x_t = tf.einsum("...jk->...kj", x)
             mat_left = tf.matmul(x, self.R)
             A = activations.get(self.activation)(tf.matmul(mat_left, x_t))
-            return A
+        if self.zero_diag:
+            return A * self.diag
+        return A
 
 
 class BilinearDecoderSparse(l.Layer):
@@ -828,6 +831,7 @@ class GCNDirected(l.Layer):
     Implementation of Spectral-based Graph Convolutional Network for Directed Graphs
     https://arxiv.org/abs/1907.08990
     """
+
     def __init__(
             self, hidden_size, activation="relu", dropout_rate=0.5, layer=0, **kwargs
     ):
