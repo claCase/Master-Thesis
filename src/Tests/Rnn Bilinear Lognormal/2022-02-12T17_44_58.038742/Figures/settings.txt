@@ -1,6 +1,0 @@
-encoder_type: gat 
-training_years: from 1964 to 1984 
-pred_years: from 1984 to 1989 
-dropout_rate: 0.2 
-sparse: False 
-baci:True
