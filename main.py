@@ -28,7 +28,6 @@ from sklearn.cluster import SpectralClustering
 
 
 if __name__ == "__main__":
-    os.chdir("../../")
     parser = argparse.ArgumentParser()
     parser.add_argument("--k", action="store_true")
     parser.add_argument("--gat", action="store_true")
