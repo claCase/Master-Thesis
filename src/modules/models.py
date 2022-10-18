@@ -9,17 +9,20 @@ from tensorflow import keras
 
 
 class NestedGRUCell(DropoutRNNCellMixin, l.Layer):
-    def __init__(self, nodes, dropout, recurent_dropout, hidden_size_in, hidden_size_out, regularizer=None, gnn_h=False,
+    def __init__(self, nodes, dropout,
+                 recurrent_dropout, hidden_size_in,
+                 hidden_size_out, regularizer=None, gnn_h=False,
                  layer_norm=False, **kwargs):
         super(NestedGRUCell, self).__init__(**kwargs)
         self.tot_nodes = nodes
         self.hidden_size_in = hidden_size_in
         self.hidden_size_out = hidden_size_out
-        self.recurrent_dropout = recurent_dropout
+        self.recurrent_dropout = recurrent_dropout
         self.dropout = dropout
         self.regularizer = regularizer
         self.gnn_h = gnn_h
         self.layer_norm = layer_norm
+        self.state_size = [tf.TensorShape((self.tot_nodes, self.hidden_size_in)),]
         if self.layer_norm:
             self.ln = l.LayerNormalization()
         if tf.compat.v1.executing_eagerly_outside_functions():
@@ -68,7 +71,7 @@ class NestedGRUCell(DropoutRNNCellMixin, l.Layer):
         h_prime = u * h + (1 - u) * c
         if self.layer_norm:
             h_prime = self.ln(h_prime)
-        return h_prime
+        return h_prime, h_prime
 
     def get_config(self):
         config = {"nodes": self.tot_nodes,
