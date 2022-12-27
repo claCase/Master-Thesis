@@ -178,9 +178,9 @@ class RecurrentEncoderDecoder(DropoutRNNCellMixin, keras.layers.Layer):
         # Recurrence
         if self.gnn_h:
             x_prime = [x_prime, a]
-        h_prime_p = self.recurrent_p(x_prime, h_p, training=training)
-        h_prime_mu = self.recurrent_mu(x_prime, h_mu, training=training)
-        h_prime_sigma = self.recurrent_sigma(x_prime, h_sigma, training=training)
+        h_prime_p, _ = self.recurrent_p(x_prime, h_p, training=training)
+        h_prime_mu, _ = self.recurrent_mu(x_prime, h_mu, training=training)
+        h_prime_sigma, _ = self.recurrent_sigma(x_prime, h_sigma, training=training)
 
         p = self.decoder_p(h_prime_p)
         p = tf.expand_dims(p, -1)
